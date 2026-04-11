@@ -37,6 +37,7 @@ function sameDay(a,b){const da=new Date(a),db=new Date(b);return da.getFullYear(
 function fmtT(ts){return ts?new Date(ts).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",hour12:true}):"—";}
 function fmtD(ts){return ts?new Date(ts).toLocaleDateString("en-US",{month:"short",day:"2-digit",year:"numeric"}):"—";}
 function fmtDur(a,b){if(!a||!b)return"—";const ms=new Date(b)-new Date(a),hh=Math.floor(ms/3600000),mm=Math.floor((ms%3600000)/60000);return hh+"h "+mm+"m";}
+function toLocalDT(ts){if(!ts)return"";const d=new Date(ts);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,16);}
 
 async function compressImg(file){return new Promise(res=>{const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{URL.revokeObjectURL(url);const MAX=800,scale=img.width>MAX?MAX/img.width:1,w=Math.round(img.width*scale),hh=Math.round(img.height*scale),c=document.createElement("canvas");c.width=w;c.height=hh;c.getContext("2d").drawImage(img,0,0,w,hh);c.toBlob(blob=>res(new File([blob],file.name,{type:"image/jpeg"})),"image/jpeg",0.7);};img.onerror=()=>res(file);img.src=url;});}
 
@@ -97,6 +98,55 @@ function SelfieModal({isOpen,title,onCapture,onCancel}){
               h(Btn,{onClick:retake,bg:"#27272A",style:{flex:1}},"↺ Retake"),
               h(Btn,{onClick:confirm,disabled:up,style:{flex:1}},up?"Uploading...":"✓ Use Photo")
             )
+      )
+    )
+  );
+}
+
+// ── Edit Log Modal ────────────────────────────────────────────────────────────
+function EditLogModal({isOpen,log,onSave,onCancel}){
+  const[timeIn,setTimeIn]=useState(""),[timeOut,setTimeOut]=useState(""),[saving,setSaving]=useState(false);
+  useEffect(()=>{
+    if(!isOpen||!log)return;
+    setTimeIn(toLocalDT(log.time_in));
+    setTimeOut(toLocalDT(log.time_out));
+  },[isOpen,log]);
+  const save=async()=>{
+    if(!timeIn){return;}
+    setSaving(true);
+    await onSave({time_in:new Date(timeIn).toISOString(),time_out:timeOut?new Date(timeOut).toISOString():null});
+    setSaving(false);
+  };
+  if(!isOpen||!log)return null;
+  const inp={width:"100%",background:BG,border:"1px solid "+BORDER,borderRadius:8,padding:"9px 11px",color:TEXT,fontSize:13,boxSizing:"border-box",colorScheme:"dark"};
+  const lbl={color:SUB,fontSize:12,display:"block",marginBottom:5};
+  return h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}},
+    h("div",{style:{background:CARD,border:"1px solid "+BORDER,borderRadius:16,width:"100%",maxWidth:400,padding:24}},
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}},
+        h("span",{style:{color:TEXT,fontWeight:700,fontSize:16}},"✏ Edit Log"),
+        h("button",{onClick:onCancel,style:{background:"none",border:"none",color:MUTED,fontSize:24,cursor:"pointer",lineHeight:1}},"×")
+      ),
+      h("div",{style:{background:"#27272A",borderRadius:8,padding:"8px 12px",marginBottom:16,fontSize:12,color:SUB}},
+        h("span",{style:{color:TEXT,fontWeight:600}},log.display_name),
+        h("span",null," · "),
+        h("span",null,fmtD(log.time_in))
+      ),
+      h("div",{style:{marginBottom:14}},
+        h("label",{style:lbl},"Time In"),
+        h("input",{type:"datetime-local",value:timeIn,onChange:e=>setTimeIn(e.target.value),style:inp})
+      ),
+      h("div",{style:{marginBottom:20}},
+        h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}},
+          h("label",{style:Object.assign({},lbl,{marginBottom:0})},"Time Out"),
+          timeOut&&h("button",{onClick:()=>setTimeOut(""),style:{background:"none",border:"none",color:"#f87171",fontSize:11,cursor:"pointer",padding:0}},"✕ Clear")
+        ),
+        h("input",{type:"datetime-local",value:timeOut,onChange:e=>setTimeOut(e.target.value),style:inp}),
+        h("div",{style:{color:MUTED,fontSize:11,marginTop:4}},"Leave empty if agent has not clocked out")
+      ),
+      timeIn&&timeOut&&new Date(timeOut)<new Date(timeIn)&&h("div",{style:{color:"#f87171",fontSize:12,marginBottom:12,padding:"7px 10px",background:"#dc262622",borderRadius:7}},"⚠ Time Out is before Time In"),
+      h("div",{style:{display:"flex",gap:10}},
+        h(Btn,{onClick:onCancel,bg:"#27272A",style:{flex:1}},"Cancel"),
+        h(Btn,{onClick:save,disabled:saving||!timeIn,style:{flex:1}},saving?"Saving...":"Save Changes")
       )
     )
   );
@@ -277,7 +327,11 @@ function AdminDash({user,onLogout}){
   const[tab,setTab]=useState("logs"),[logs,setLogs]=useState([]),[users,setUsers]=useState([]),[homes,setHomes]=useState([]);
   const[fUser,setFUser]=useState(""),[fFrom,setFFrom]=useState(""),[fTo,setFTo]=useState("");
   const[toast,setToast]=useState(null),[nu,setNu]=useState({id:"",display_name:"",pin:"",role:"agent"}),[adding,setAdding]=useState(false);
-  const mapRef=useRef(),mapObj=useRef();
+  const[editLog,setEditLog]=useState(null);
+  const[mfUser,setMfUser]=useState(""),[mfFrom,setMfFrom]=useState(""),[mfTo,setMfTo]=useState(""),[mfType,setMfType]=useState("all");
+  const[mapReady,setMapReady]=useState(false);
+  const mapRef=useRef(),mapObj=useRef(),markersLayerRef=useRef();
+
   const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3000);};
   useEffect(()=>{loadAll();},[]);
   const loadAll=async()=>{
@@ -288,6 +342,7 @@ function AdminDash({user,onLogout}){
     ]);
     setLogs(l||[]);setUsers(u||[]);setHomes(hh||[]);
   };
+
   useEffect(()=>{
     if(tab!=="map")return;
     setTimeout(()=>{
@@ -295,16 +350,33 @@ function AdminDash({user,onLogout}){
       const L=window.L,map=L.map(mapRef.current).setView([12.88,121.77],6);
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
       mapObj.current=map;
-      const pin=(lat,lon,color,popup)=>{const ic=L.divIcon({html:'<div style="width:13px;height:13px;background:'+color+';border:2px solid #fff;border-radius:50%"></div>',className:"",iconAnchor:[6,6]});L.marker([lat,lon],{icon:ic}).addTo(map).bindPopup(popup);};
-      homes.forEach(hh=>{const u=users.find(x=>x.id===hh.user_id);pin(hh.lat,hh.lon,"#3b82f6","<b>🏠 Home</b><br/>"+(u?.display_name||hh.user_id));});
-      logs.forEach(l=>{
-        if(l.lat&&l.lon)pin(l.lat,l.lon,"#22c55e",'<div style="text-align:center"><b>🟢 Time In</b><br/>'+l.display_name+'<br/><small>'+fmtD(l.time_in)+" "+fmtT(l.time_in)+'</small>'+(l.blob_id?'<br/><img src="'+l.blob_id+'" style="width:70px;height:70px;object-fit:cover;border-radius:5px;margin-top:4px"/>':"")+'</div>');
-        if(l.timeout_lat&&l.timeout_lon)pin(l.timeout_lat,l.timeout_lon,"#ef4444",'<div style="text-align:center"><b>🔴 Time Out</b><br/>'+l.display_name+'<br/><small>'+fmtD(l.time_out)+" "+fmtT(l.time_out)+'</small>'+(l.timeout_blob_id?'<br/><img src="'+l.timeout_blob_id+'" style="width:70px;height:70px;object-fit:cover;border-radius:5px;margin-top:4px"/>':"")+'</div>');
-      });
-      const pts=[...homes.map(hh=>[hh.lat,hh.lon]),...logs.filter(l=>l.lat).map(l=>[l.lat,l.lon])];
-      if(pts.length>1)map.fitBounds(pts,{padding:[30,30]});
+      const layer=L.layerGroup().addTo(map);
+      markersLayerRef.current=layer;
+      setMapReady(true);
     },300);
-  },[tab,homes,logs,users]);
+  },[tab]);
+
+  useEffect(()=>{
+    if(!mapReady||!mapObj.current||!markersLayerRef.current)return;
+    const L=window.L,layer=markersLayerRef.current,map=mapObj.current;
+    layer.clearLayers();
+    const pin=(lat,lon,color,popup)=>{const ic=L.divIcon({html:'<div style="width:13px;height:13px;background:'+color+';border:2px solid #fff;border-radius:50%"></div>',className:"",iconAnchor:[6,6]});L.marker([lat,lon],{icon:ic}).bindPopup(popup).addTo(layer);};
+    const filteredLogs=logs.filter(l=>{
+      if(mfUser&&l.user_id!==mfUser)return false;
+      if(mfFrom&&new Date(l.time_in)<new Date(mfFrom))return false;
+      if(mfTo&&new Date(l.time_in)>new Date(mfTo+"T23:59:59"))return false;
+      return true;
+    });
+    const filteredHomes=homes.filter(hh=>!mfUser||hh.user_id===mfUser);
+    if(mfType==="all"||mfType==="home"){filteredHomes.forEach(hh=>{const u=users.find(x=>x.id===hh.user_id);pin(hh.lat,hh.lon,"#3b82f6","<b>🏠 Home</b><br/>"+(u?.display_name||hh.user_id));});}
+    if(mfType==="all"||mfType==="timein"){filteredLogs.forEach(l=>{if(l.lat&&l.lon)pin(l.lat,l.lon,"#22c55e",'<div style="text-align:center"><b>🟢 Time In</b><br/>'+l.display_name+'<br/><small>'+fmtD(l.time_in)+" "+fmtT(l.time_in)+'</small>'+(l.blob_id?'<br/><img src="'+l.blob_id+'" style="width:70px;height:70px;object-fit:cover;border-radius:5px;margin-top:4px"/>':"")+'</div>');});}
+    if(mfType==="all"||mfType==="timeout"){filteredLogs.forEach(l=>{if(l.timeout_lat&&l.timeout_lon)pin(l.timeout_lat,l.timeout_lon,"#ef4444",'<div style="text-align:center"><b>🔴 Time Out</b><br/>'+l.display_name+'<br/><small>'+fmtD(l.time_out)+" "+fmtT(l.time_out)+'</small>'+(l.timeout_blob_id?'<br/><img src="'+l.timeout_blob_id+'" style="width:70px;height:70px;object-fit:cover;border-radius:5px;margin-top:4px"/>':"")+'</div>');});}
+    const pts=[];
+    if(mfType==="all"||mfType==="home")filteredHomes.forEach(hh=>pts.push([hh.lat,hh.lon]));
+    if(mfType==="all"||mfType==="timein")filteredLogs.filter(l=>l.lat).forEach(l=>pts.push([l.lat,l.lon]));
+    if(mfType==="all"||mfType==="timeout")filteredLogs.filter(l=>l.timeout_lat).forEach(l=>pts.push([l.timeout_lat,l.timeout_lon]));
+    if(pts.length>1)map.fitBounds(pts,{padding:[30,30]});
+  },[mapReady,mfUser,mfFrom,mfTo,mfType,logs,homes,users]);
 
   const filtered=logs.filter(l=>{
     if(fUser&&l.user_id!==fUser)return false;
@@ -315,6 +387,17 @@ function AdminDash({user,onLogout}){
   const csv=()=>{
     const rows=[["Name","Date","Time In","Time Out","Duration","Lat","Lon"],...filtered.map(l=>[l.display_name,fmtD(l.time_in),fmtT(l.time_in),fmtT(l.time_out),fmtDur(l.time_in,l.time_out),l.lat,l.lon])];
     const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));a.download="bao-logs.csv";a.click();
+  };
+  const delLog=async id=>{
+    if(!confirm("Delete this log entry? This cannot be undone."))return;
+    const{error}=await sb.from("time_logs").delete().eq("id",id);
+    if(error){toast2(error.message,false);return;}
+    toast2("Log deleted.");loadAll();
+  };
+  const saveEditLog=async updates=>{
+    const{error}=await sb.from("time_logs").update({time_in:updates.time_in,time_out:updates.time_out}).eq("id",editLog.id);
+    if(error){toast2(error.message,false);return;}
+    setEditLog(null);toast2("Log updated! ✓");loadAll();
   };
   const promote=async id=>{await sb.from("users").update({role:"admin"}).eq("id",id);toast2("Promoted!");loadAll();};
   const demote=async id=>{if(id==="admin"){toast2("Cannot demote main admin.",false);return;}await sb.from("users").update({role:"agent"}).eq("id",id);toast2("Demoted.");loadAll();};
@@ -327,6 +410,7 @@ function AdminDash({user,onLogout}){
     setAdding(false);
   };
   const ts=t=>({padding:"7px 14px",borderRadius:8,border:"none",cursor:"pointer",fontWeight:700,fontSize:13,background:tab===t?O:"transparent",color:tab===t?"#fff":SUB});
+  const mts=t=>({padding:"5px 12px",borderRadius:7,border:"none",cursor:"pointer",fontWeight:700,fontSize:12,background:mfType===t?O:"transparent",color:mfType===t?"#fff":SUB});
   const inp={background:BG,border:"1px solid "+BORDER,borderRadius:8,color:TEXT,padding:"7px 10px",fontSize:13};
   return h("div",{style:{minHeight:"100vh",background:BG,paddingBottom:40}},
     h("header",{style:{background:CARD,borderBottom:"1px solid "+BORDER,padding:"0 16px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between"}},
@@ -343,11 +427,30 @@ function AdminDash({user,onLogout}){
         h("button",{style:ts("logs"),onClick:()=>setTab("logs")},"📋 Logs"),
         h("button",{style:ts("users"),onClick:()=>setTab("users")},"👥 Users")
       ),
-      tab==="map"&&h(Card,{style:{padding:0,overflow:"hidden"}},
-        h("div",{ref:mapRef,style:{width:"100%",height:460}}),
-        h("div",{style:{padding:"8px 14px",display:"flex",gap:14,fontSize:12,color:SUB}},
-          h("span",null,"🔵 Home"),h("span",null,"🟢 Time In"),h("span",null,"🔴 Time Out"),
-          h("span",{style:{marginLeft:"auto"}},"Click pins for details & photos")
+      tab==="map"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
+        h(Card,null,
+          h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
+            h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Agent"),h("select",{value:mfUser,onChange:e=>setMfUser(e.target.value),style:inp},h("option",{value:""},"All agents"),...users.map(u=>h("option",{key:u.id,value:u.id},u.display_name)))),
+            h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"From"),h("input",{type:"date",value:mfFrom,onChange:e=>setMfFrom(e.target.value),style:inp})),
+            h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"To"),h("input",{type:"date",value:mfTo,onChange:e=>setMfTo(e.target.value),style:inp})),
+            h("div",null,
+              h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Pin Type"),
+              h("div",{style:{display:"flex",gap:3,background:"#09090B",border:"1px solid "+BORDER,borderRadius:8,padding:3}},
+                h("button",{style:mts("all"),onClick:()=>setMfType("all")},"All"),
+                h("button",{style:mts("timein"),onClick:()=>setMfType("timein")},"🟢 In"),
+                h("button",{style:mts("timeout"),onClick:()=>setMfType("timeout")},"🔴 Out"),
+                h("button",{style:mts("home"),onClick:()=>setMfType("home")},"🔵 Home")
+              )
+            ),
+            (mfUser||mfFrom||mfTo||mfType!=="all")&&h(Btn,{onClick:()=>{setMfUser("");setMfFrom("");setMfTo("");setMfType("all");},bg:"#27272A",style:{padding:"7px 12px",fontSize:12,alignSelf:"flex-end"}},"✕ Clear")
+          )
+        ),
+        h(Card,{style:{padding:0,overflow:"hidden"}},
+          h("div",{ref:mapRef,style:{width:"100%",height:460}}),
+          h("div",{style:{padding:"8px 14px",display:"flex",gap:14,fontSize:12,color:SUB}},
+            h("span",null,"🔵 Home"),h("span",null,"🟢 Time In"),h("span",null,"🔴 Time Out"),
+            h("span",{style:{marginLeft:"auto"}},"Click pins for details & photos")
+          )
         )
       ),
       tab==="logs"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
@@ -362,9 +465,9 @@ function AdminDash({user,onLogout}){
         ),
         h(Card,{style:{padding:0,overflowX:"auto"}},
           h("table",{style:{width:"100%",fontSize:12}},
-            h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},["Photo","Agent","Date","In","Out","Duration","GPS"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 12px",textAlign:"left",whiteSpace:"nowrap"}},x)))),
+            h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},["Photo","Agent","Date","In","Out","Duration","GPS","Actions"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 12px",textAlign:"left",whiteSpace:"nowrap"}},x)))),
             h("tbody",null,filtered.length===0
-              ?h("tr",null,h("td",{colSpan:7,style:{color:MUTED,textAlign:"center",padding:20}},"No logs found"))
+              ?h("tr",null,h("td",{colSpan:8,style:{color:MUTED,textAlign:"center",padding:20}},"No logs found"))
               :filtered.map((l,i)=>h("tr",{key:l.id,style:{borderBottom:i<filtered.length-1?"1px solid "+BORDER:"none",background:i%2?"#ffffff04":"transparent"}},
                 h("td",{style:{padding:"8px 12px"}},l.blob_id&&h("img",{src:l.blob_id,style:{width:36,height:36,borderRadius:6,objectFit:"cover"},onError:e=>e.target.style.display="none"})),
                 h("td",{style:{padding:"8px 12px",color:TEXT,fontWeight:600}},l.display_name),
@@ -372,7 +475,13 @@ function AdminDash({user,onLogout}){
                 h("td",{style:{padding:"8px 12px",color:"#4ade80"}},fmtT(l.time_in)),
                 h("td",{style:{padding:"8px 12px",color:l.time_out?"#f87171":MUTED}},fmtT(l.time_out)),
                 h("td",{style:{padding:"8px 12px",color:O}},fmtDur(l.time_in,l.time_out)),
-                h("td",{style:{padding:"8px 12px",color:MUTED,fontSize:11}},l.lat?.toFixed(3)+","+l.lon?.toFixed(3))
+                h("td",{style:{padding:"8px 12px",color:MUTED,fontSize:11}},l.lat?.toFixed(3)+","+l.lon?.toFixed(3)),
+                h("td",{style:{padding:"8px 12px"}},
+                  h("div",{style:{display:"flex",gap:5}},
+                    h("button",{onClick:()=>setEditLog(l),style:{background:"#27272A",color:"#fff",border:"none",borderRadius:6,padding:"3px 8px",fontSize:11,cursor:"pointer",fontWeight:600}},"✏ Edit"),
+                    h("button",{onClick:()=>delLog(l.id),style:{background:"#dc2626",color:"#fff",border:"none",borderRadius:6,padding:"3px 8px",fontSize:11,cursor:"pointer",fontWeight:600}},"🗑 Del")
+                  )
+                )
               ))
             )
           )
@@ -405,7 +514,8 @@ function AdminDash({user,onLogout}){
           )
         )
       )
-    )
+    ),
+    h(EditLogModal,{isOpen:!!editLog,log:editLog,onSave:saveEditLog,onCancel:()=>setEditLog(null)})
   );
 }
 

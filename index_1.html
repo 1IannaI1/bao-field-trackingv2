@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>BAO Field Tracking</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#09090B;font-family:system-ui,-apple-system,sans-serif;color:#FAFAFA}
+input,select{outline:none;}
+input:focus,select:focus{border-color:#F97316!important;}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#18181B}
+::-webkit-scrollbar-thumb{background:#3f3f46;border-radius:3px}
+table{border-collapse:collapse}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+const{createElement:h,useState,useEffect,useRef}=React;
+const{createClient}=supabase;
+
+const SURL="https://pxhxohybdippppzagcxu.supabase.co";
+const SKEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4aHhvaHliZGlwcHBwemFnY3h1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4OTIxMDcsImV4cCI6MjA5MTQ2ODEwN30.E1ag_mzm8ngeGO7vDeDYUPJChrsGJAsIhrfEW2D3cEs";
+const sb=createClient(SURL,SKEY);
+
+const O="#F97316",BG="#09090B",CARD="#18181B",BORDER="#27272A",MUTED="#71717A",TEXT="#FAFAFA",SUB="#A1A1AA";
+
+async function hashPin(p){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(p));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
+function sameDay(a,b){const da=new Date(a),db=new Date(b);return da.getFullYear()===db.getFullYear()&&da.getMonth()===db.getMonth()&&da.getDate()===db.getDate();}
+function fmtT(ts){return ts?new Date(ts).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",hour12:true}):"—";}
+function fmtD(ts){return ts?new Date(ts).toLocaleDateString("en-US",{month:"short",day:"2-digit",year:"numeric"}):"—";}
+function fmtDur(a,b){if(!a||!b)return"—";const ms=new Date(b)-new Date(a),hh=Math.floor(ms/3600000),mm=Math.floor((ms%3600000)/60000);return hh+"h "+mm+"m";}
+
+async function compressImg(file){return new Promise(res=>{const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{URL.revokeObjectURL(url);const MAX=800,scale=img.width>MAX?MAX/img.width:1,w=Math.round(img.width*scale),hh=Math.round(img.height*scale),c=document.createElement("canvas");c.width=w;c.height=hh;c.getContext("2d").drawImage(img,0,0,w,hh);c.toBlob(blob=>res(new File([blob],file.name,{type:"image/jpeg"})),"image/jpeg",0.7);};img.onerror=()=>res(file);img.src=url;});}
+
+async function uploadSelfie(file){
+  const comp=await compressImg(file);
+  const name="selfies/"+Date.now()+"-"+Math.random().toString(36).slice(2)+".jpg";
+  const{error}=await sb.storage.from("selfies").upload(name,comp,{contentType:"image/jpeg"});
+  if(error)throw new Error(error.message);
+  return sb.storage.from("selfies").getPublicUrl(name).data.publicUrl;
+}
+
+function Btn({children,onClick,bg,style,disabled}){
+  bg=bg||O;
+  return h("button",{onClick,disabled,style:Object.assign({background:disabled?"#3f3f46":bg,color:disabled?MUTED:"#fff",border:"none",borderRadius:10,padding:"10px 18px",fontSize:14,fontWeight:700,cursor:disabled?"not-allowed":"pointer"},style||{})},children);
+}
+function Card({children,style}){return h("div",{style:Object.assign({background:CARD,border:"1px solid "+BORDER,borderRadius:14,padding:20},style||{})},children);}
+
+// ── Selfie Modal ──────────────────────────────────────────────────────────────
+function SelfieModal({isOpen,title,onCapture,onCancel}){
+  const vRef=useRef(),cRef=useRef(),stRef=useRef();
+  const[pre,setPre]=useState(null),[file,setFile]=useState(null),[up,setUp]=useState(false),[err,setErr]=useState(null),[rdy,setRdy]=useState(false);
+  useEffect(()=>{
+    if(!isOpen)return;
+    setPre(null);setFile(null);setErr(null);setRdy(false);
+    navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false})
+      .then(st=>{stRef.current=st;if(vRef.current){vRef.current.srcObject=st;setRdy(true);}})
+      .catch(e=>setErr("Camera denied: "+e.message));
+    return()=>{if(stRef.current){stRef.current.getTracks().forEach(t=>t.stop());stRef.current=null;}};
+  },[isOpen]);
+  const snap=()=>{
+    const v=vRef.current,c=cRef.current;if(!v||!c)return;
+    c.width=v.videoWidth;c.height=v.videoHeight;
+    const ctx=c.getContext("2d");ctx.translate(c.width,0);ctx.scale(-1,1);ctx.drawImage(v,0,0);
+    c.toBlob(b=>{const f=new File([b],"s.jpg",{type:"image/jpeg"});setFile(f);setPre(URL.createObjectURL(b));if(stRef.current){stRef.current.getTracks().forEach(t=>t.stop());stRef.current=null;}},"image/jpeg",.9);
+  };
+  const retake=()=>{setPre(null);setFile(null);setErr(null);setRdy(false);navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false}).then(st=>{stRef.current=st;if(vRef.current){vRef.current.srcObject=st;setRdy(true);}}).catch(e=>setErr(e.message));};
+  const confirm=async()=>{if(!file)return;setUp(true);setErr(null);try{const url=await uploadSelfie(file);onCapture(url);}catch(e){setErr("Upload failed — try again.");}finally{setUp(false);}};
+  if(!isOpen)return null;
+  return h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}},
+    h("div",{style:{background:CARD,border:"1px solid "+BORDER,borderRadius:16,width:"100%",maxWidth:360,padding:20}},
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}},
+        h("span",{style:{color:TEXT,fontWeight:700,fontSize:16}},title),
+        h("button",{onClick:onCancel,style:{background:"none",border:"none",color:MUTED,fontSize:24,cursor:"pointer",lineHeight:1}},"×")
+      ),
+      h("div",{style:{background:"#000",borderRadius:12,overflow:"hidden",minHeight:260,position:"relative"}},
+        !pre&&h("video",{ref:vRef,autoPlay:true,playsInline:true,muted:true,style:{width:"100%",transform:"scaleX(-1)",display:"block",minHeight:260,objectFit:"cover"}}),
+        !pre&&!rdy&&!err&&h("div",{style:{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",color:SUB,fontSize:13}},"Starting camera..."),
+        pre&&h("img",{src:pre,style:{width:"100%",display:"block"}}),
+        err&&h("div",{style:{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"#00000099",color:"#f87171",padding:16,textAlign:"center",fontSize:13}},err)
+      ),
+      h("canvas",{ref:cRef,style:{display:"none"}}),
+      err&&pre&&h("div",{style:{color:"#f87171",fontSize:13,marginTop:8,textAlign:"center"}},err),
+      h("div",{style:{display:"flex",gap:10,marginTop:14}},
+        h(Btn,{onClick:onCancel,bg:"#27272A",style:{flex:1}},"Cancel"),
+        !pre
+          ? h(Btn,{onClick:snap,disabled:!rdy,style:{flex:1}},"📷 Take Selfie")
+          : h("div",{style:{display:"flex",gap:8,flex:1}},
+              h(Btn,{onClick:retake,bg:"#27272A",style:{flex:1}},"↺ Retake"),
+              h(Btn,{onClick:confirm,disabled:up,style:{flex:1}},up?"Uploading...":"✓ Use Photo")
+            )
+      )
+    )
+  );
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+function Login({onLogin}){
+  const[un,setUn]=useState(""),[pin,setPin]=useState(""),[err,setErr]=useState(""),[ld,setLd]=useState(false);
+  const go=async()=>{
+    if(!un||!pin){setErr("Enter username and PIN.");return;}
+    setLd(true);setErr("");
+    try{
+      const h2=await hashPin(pin);
+      const{data,error}=await sb.from("users").select("*").eq("id",un.trim().toLowerCase()).eq("pin_hash",h2).single();
+      if(error||!data){setErr("Wrong username or PIN.");return;}
+      onLogin(data);
+    }catch{setErr("Login failed.");}finally{setLd(false);}
+  };
+  const inp={width:"100%",background:BG,border:"1px solid "+BORDER,borderRadius:8,padding:"10px 12px",color:TEXT,fontSize:15,boxSizing:"border-box"};
+  return h("div",{style:{minHeight:"100vh",background:BG,display:"flex",alignItems:"center",justifyContent:"center",padding:20}},
+    h("div",{style:{width:"100%",maxWidth:340}},
+      h("div",{style:{textAlign:"center",marginBottom:28}},
+        h("div",{style:{width:64,height:64,background:O,borderRadius:16,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 14px",fontSize:28,fontWeight:800,color:"#fff"}},"B"),
+        h("h1",{style:{color:TEXT,fontSize:22,fontWeight:800}},"BAO Field Tracking"),
+        h("p",{style:{color:SUB,margin:"6px 0 0",fontSize:13}},"Sign in to continue")
+      ),
+      h(Card,null,
+        h("div",{style:{marginBottom:12}},
+          h("label",{style:{color:SUB,fontSize:12,display:"block",marginBottom:5}},"Username"),
+          h("input",{value:un,onChange:e=>setUn(e.target.value),onKeyDown:e=>e.key==="Enter"&&go(),placeholder:"e.g. admin",style:inp})
+        ),
+        h("div",{style:{marginBottom:16}},
+          h("label",{style:{color:SUB,fontSize:12,display:"block",marginBottom:5}},"PIN"),
+          h("input",{type:"password",value:pin,onChange:e=>setPin(e.target.value),onKeyDown:e=>e.key==="Enter"&&go(),placeholder:"••••",style:inp})
+        ),
+        err&&h("div",{style:{color:"#f87171",fontSize:13,marginBottom:12,textAlign:"center"}},err),
+        h(Btn,{onClick:go,disabled:ld,style:{width:"100%"}},ld?"Signing in...":"Sign In")
+      )
+    )
+  );
+}
+
+// ── Home Location ─────────────────────────────────────────────────────────────
+function HomeLoc({user,onDone}){
+  const mapRef=useRef(),mapObj=useRef(),markerRef=useRef();
+  const[coords,setCoords]=useState(null),[saving,setSaving]=useState(false),[err,setErr]=useState("");
+  useEffect(()=>{
+    setTimeout(()=>{
+      if(!mapRef.current||mapObj.current)return;
+      const L=window.L,map=L.map(mapRef.current).setView([12.88,121.77],6);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+      mapObj.current=map;
+      map.on("click",e=>{const{lat,lng}=e.latlng;setCoords({lat,lon:lng});if(markerRef.current)map.removeLayer(markerRef.current);markerRef.current=L.marker([lat,lng]).addTo(map);});
+    },300);
+  },[]);
+  const gps=()=>navigator.geolocation.getCurrentPosition(p=>{
+    const{latitude:lat,longitude:lon}=p.coords;setCoords({lat,lon});
+    const map=mapObj.current,L=window.L;
+    if(map){map.setView([lat,lon],15);if(markerRef.current)map.removeLayer(markerRef.current);markerRef.current=L.marker([lat,lon]).addTo(map);}
+  },()=>setErr("GPS failed. Click the map instead."),{enableHighAccuracy:true,timeout:15000});
+  const save=async()=>{
+    if(!coords){setErr("Pick a location first.");return;}setSaving(true);
+    const{error}=await sb.from("home_locations").upsert({user_id:user.id,lat:coords.lat,lon:coords.lon});
+    if(error){setErr(error.message);setSaving(false);return;}onDone();
+  };
+  return h("div",{style:{minHeight:"100vh",background:BG,padding:20}},
+    h("div",{style:{maxWidth:480,margin:"0 auto"}},
+      h("div",{style:{textAlign:"center",marginBottom:20}},
+        h("div",{style:{width:48,height:48,background:O,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 10px",fontSize:22,fontWeight:800,color:"#fff"}},"B"),
+        h("h2",{style:{color:TEXT,fontSize:18,fontWeight:700}},"Set Home Location"),
+        h("p",{style:{color:SUB,fontSize:13,margin:"5px 0 0"}},"Click the map or use GPS to set your base")
+      ),
+      h(Btn,{onClick:gps,style:{width:"100%",marginBottom:12}},"📍 Use My GPS Location"),
+      h("div",{ref:mapRef,style:{width:"100%",height:320,borderRadius:12,overflow:"hidden",border:"1px solid "+BORDER,marginBottom:12}}),
+      coords&&h("div",{style:{color:SUB,fontSize:12,textAlign:"center",marginBottom:10}},"📌 "+coords.lat.toFixed(5)+", "+coords.lon.toFixed(5)),
+      err&&h("div",{style:{color:"#f87171",fontSize:13,textAlign:"center",marginBottom:10}},err),
+      h(Btn,{onClick:save,disabled:saving||!coords,style:{width:"100%"}},saving?"Saving...":"Save Home Location")
+    )
+  );
+}
+
+// ── Agent Dashboard ───────────────────────────────────────────────────────────
+function AgentDash({user,onLogout}){
+  const[logs,setLogs]=useState([]),[now,setNow]=useState(new Date()),[showCam,setShowCam]=useState(false),[mode,setMode]=useState("in"),[sub,setSub]=useState(false),[toast,setToast]=useState(null),[copied,setCopied]=useState(false);
+  useEffect(()=>{load();const t=setInterval(()=>setNow(new Date()),1000);return()=>clearInterval(t);},[]);
+  const load=async()=>{const{data}=await sb.from("time_logs").select("*").eq("user_id",user.id).order("time_in",{ascending:false}).limit(20);setLogs(data||[]);};
+  const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3500);};
+  const latest=logs[0]||null;
+  const clocked=latest&&!latest.time_out&&sameDay(latest.time_in,now);
+  const forgot=latest&&!latest.time_out&&!sameDay(latest.time_in,now);
+  const cap=async url=>{
+    setShowCam(false);setSub(true);
+    try{
+      const pos=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{enableHighAccuracy:true,timeout:15000}));
+      const lat=pos.coords.latitude,lon=pos.coords.longitude;
+      if(mode==="in"){
+        const id=user.id+"-"+Date.now();
+        const{error}=await sb.from("time_logs").insert({id,user_id:user.id,display_name:user.display_name,blob_id:url,lat,lon,time_in:new Date().toISOString()});
+        if(error)throw error;toast2("Time In recorded! ✓");
+      }else{
+        const{error}=await sb.from("time_logs").update({time_out:new Date().toISOString(),timeout_blob_id:url,timeout_lat:lat,timeout_lon:lon}).eq("id",latest.id);
+        if(error)throw error;toast2("Time Out recorded! ✓");
+      }
+      load();
+    }catch(e){toast2(e.message||"Failed.",false);}finally{setSub(false);}
+  };
+  const dateStr=now.toLocaleDateString("en-US",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
+  const timeStr=now.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  return h("div",{style:{minHeight:"100vh",background:BG,paddingBottom:40}},
+    h("header",{style:{background:CARD,borderBottom:"1px solid "+BORDER,padding:"0 16px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between"}},
+      h("div",{style:{display:"flex",alignItems:"center",gap:8}},
+        h("div",{style:{width:30,height:30,background:O,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,color:"#fff",fontSize:13}},"B"),
+        h("span",{style:{color:TEXT,fontWeight:700,fontSize:14}},"BAO Field Tracking")
+      ),
+      h("div",{style:{display:"flex",gap:8}},
+        h("button",{onClick:()=>{navigator.clipboard.writeText(user.id);setCopied(true);setTimeout(()=>setCopied(false),2000);},style:{background:"#27272A",border:"none",color:SUB,borderRadius:20,padding:"3px 10px",fontSize:11,cursor:"pointer"}},copied?"Copied!":"👤 "+user.id.slice(0,10)+"..."),
+        h(Btn,{onClick:onLogout,bg:"#27272A",style:{padding:"5px 12px",fontSize:12}},"Logout")
+      )
+    ),
+    h("div",{style:{maxWidth:480,margin:"0 auto",padding:"20px 14px",display:"flex",flexDirection:"column",gap:14}},
+      toast&&h("div",{style:{background:toast.ok?"#16a34a33":"#dc262633",border:"1px solid "+(toast.ok?"#16a34a":"#dc2626"),borderRadius:10,padding:"11px 16px",color:toast.ok?"#4ade80":"#f87171",textAlign:"center",fontWeight:600}},toast.msg),
+      h(Card,{style:{textAlign:"center"}},
+        h("div",{style:{color:SUB,fontSize:12,marginBottom:4}},dateStr),
+        h("div",{style:{color:TEXT,fontSize:34,fontWeight:800}},timeStr),
+        clocked&&h("div",{style:{marginTop:8,display:"inline-flex",alignItems:"center",gap:6,background:"#16a34a22",border:"1px solid #16a34a44",borderRadius:20,padding:"3px 12px",color:"#4ade80",fontSize:12,fontWeight:600}},
+          h("span",{style:{width:6,height:6,background:"#4ade80",borderRadius:"50%",display:"inline-block"}})," Clocked In"
+        )
+      ),
+      forgot&&h("div",{style:{background:"#ca8a0422",border:"1px solid #ca8a0444",borderRadius:10,padding:"11px 14px"}},
+        h("div",{style:{color:"#fbbf24",fontWeight:700,fontSize:13}},"⚠ Missed Time Out"),
+        h("div",{style:{color:"#fbbf2499",fontSize:12,marginTop:3}},"Previous day not closed — you can clock in again.")
+      ),
+      h(Card,null,
+        h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+          h("span",{style:{color:TEXT,fontWeight:700,fontSize:15}},"Attendance"),
+          h("span",{style:{background:clocked?"#16a34a22":"#27272A",color:clocked?"#4ade80":SUB,border:"1px solid "+(clocked?"#16a34a44":BORDER),borderRadius:20,padding:"2px 10px",fontSize:12,fontWeight:600}},clocked?"Clocked In":"Not Clocked In")
+        ),
+        clocked&&latest&&h("div",{style:{background:"#16a34a11",border:"1px solid #16a34a33",borderRadius:8,padding:"9px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:8}},
+          h("span",{style:{fontSize:16}},"⏰"),
+          h("div",null,h("div",{style:{color:"#4ade8099",fontSize:11}},"Clocked in at"),h("div",{style:{color:"#4ade80",fontWeight:700,fontSize:13}},fmtT(latest.time_in)))
+        ),
+        sub&&h("div",{style:{color:SUB,fontSize:13,textAlign:"center",marginBottom:10}},"📡 Getting GPS & submitting..."),
+        h("button",{disabled:sub,onClick:()=>{setMode(clocked?"out":"in");setShowCam(true);},style:{width:"100%",padding:13,borderRadius:10,border:"none",fontSize:15,fontWeight:700,background:sub?"#3f3f46":clocked?"#dc2626":O,color:sub?MUTED:"#fff",cursor:sub?"not-allowed":"pointer"}},
+          sub?"Processing...":clocked?"🔴 Time Out":"🟢 Time In"
+        ),
+        h("div",{style:{color:MUTED,fontSize:11,textAlign:"center",marginTop:8}},"📷 Selfie + GPS required")
+      ),
+      h(Card,null,
+        h("div",{style:{color:TEXT,fontWeight:700,fontSize:15,marginBottom:12}},"My Recent Logs"),
+        logs.length===0
+          ?h("div",{style:{color:MUTED,textAlign:"center",padding:"16px 0",fontSize:13}},"No logs yet. Start by clocking in!")
+          :logs.slice(0,10).map((l,i)=>{
+            const missed=!l.time_out&&!sameDay(l.time_in,now);
+            return h("div",{key:l.id,style:{border:"1px solid "+BORDER,borderRadius:10,padding:10,marginBottom:i<logs.length-1?8:0,display:"flex",gap:10}},
+              l.blob_id&&h("img",{src:l.blob_id,alt:"s",style:{width:44,height:44,borderRadius:8,objectFit:"cover",flexShrink:0},onError:e=>e.target.style.display="none"}),
+              h("div",{style:{flex:1,minWidth:0}},
+                h("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:3}},
+                  h("span",{style:{color:SUB,fontSize:11}},fmtD(l.time_in)),
+                  h("span",{style:{background:missed?"#ca8a0422":l.time_out?"#27272A":"#16a34a22",color:missed?"#fbbf24":l.time_out?SUB:"#4ade80",border:"1px solid "+(missed?"#ca8a0444":l.time_out?BORDER:"#16a34a44"),borderRadius:20,padding:"1px 8px",fontSize:11,fontWeight:600}},missed?"Missed":l.time_out?"Done":"Active")
+                ),
+                h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:2,fontSize:11}},
+                  h("div",null,h("span",{style:{color:MUTED}},"In: "),h("span",{style:{color:TEXT,fontWeight:600}},fmtT(l.time_in))),
+                  l.time_out&&h("div",null,h("span",{style:{color:MUTED}},"Out: "),h("span",{style:{color:TEXT,fontWeight:600}},fmtT(l.time_out))),
+                  l.time_out&&h("div",{style:{color:O,fontWeight:600}},fmtDur(l.time_in,l.time_out))
+                ),
+                h("div",{style:{color:MUTED,fontSize:10,marginTop:2}},"📍 "+l.lat?.toFixed(4)+", "+l.lon?.toFixed(4))
+              )
+            );
+          })
+      )
+    ),
+    h(SelfieModal,{isOpen:showCam,title:mode==="in"?"Time In — Take Selfie":"Time Out — Take Selfie",onCapture:cap,onCancel:()=>setShowCam(false)})
+  );
+}
+
+// ── Admin Dashboard ───────────────────────────────────────────────────────────
+function AdminDash({user,onLogout}){
+  const[tab,setTab]=useState("logs"),[logs,setLogs]=useState([]),[users,setUsers]=useState([]),[homes,setHomes]=useState([]);
+  const[fUser,setFUser]=useState(""),[fFrom,setFFrom]=useState(""),[fTo,setFTo]=useState("");
+  const[toast,setToast]=useState(null),[nu,setNu]=useState({id:"",display_name:"",pin:"",role:"agent"}),[adding,setAdding]=useState(false);
+  const mapRef=useRef(),mapObj=useRef();
+  const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3000);};
+  useEffect(()=>{loadAll();},[]);
+  const loadAll=async()=>{
+    const[{data:l},{data:u},{data:hh}]=await Promise.all([
+      sb.from("time_logs").select("*").order("time_in",{ascending:false}),
+      sb.from("users").select("*").order("display_name"),
+      sb.from("home_locations").select("*")
+    ]);
+    setLogs(l||[]);setUsers(u||[]);setHomes(hh||[]);
+  };
+  useEffect(()=>{
+    if(tab!=="map")return;
+    setTimeout(()=>{
+      if(!mapRef.current||mapObj.current)return;
+      const L=window.L,map=L.map(mapRef.current).setView([12.88,121.77],6);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+      mapObj.current=map;
+      const pin=(lat,lon,color,popup)=>{const ic=L.divIcon({html:'<div style="width:13px;height:13px;background:'+color+';border:2px solid #fff;border-radius:50%"></div>',className:"",iconAnchor:[6,6]});L.marker([lat,lon],{icon:ic}).addTo(map).bindPopup(popup);};
+      homes.forEach(hh=>{const u=users.find(x=>x.id===hh.user_id);pin(hh.lat,hh.lon,"#3b82f6","<b>🏠 Home</b><br/>"+(u?.display_name||hh.user_id));});
+      logs.forEach(l=>{
+        if(l.lat&&l.lon)pin(l.lat,l.lon,"#22c55e",'<div style="text-align:center"><b>🟢 Time In</b><br/>'+l.display_name+'<br/><small>'+fmtD(l.time_in)+" "+fmtT(l.time_in)+'</small>'+(l.blob_id?'<br/><img src="'+l.blob_id+'" style="width:70px;height:70px;object-fit:cover;border-radius:5px;margin-top:4px"/>':"")+'</div>');
+        if(l.timeout_lat&&l.timeout_lon)pin(l.timeout_lat,l.timeout_lon,"#ef4444",'<div style="text-align:center"><b>🔴 Time Out</b><br/>'+l.display_name+'<br/><small>'+fmtD(l.time_out)+" "+fmtT(l.time_out)+'</small>'+(l.timeout_blob_id?'<br/><img src="'+l.timeout_blob_id+'" style="width:70px;height:70px;object-fit:cover;border-radius:5px;margin-top:4px"/>':"")+'</div>');
+      });
+      const pts=[...homes.map(hh=>[hh.lat,hh.lon]),...logs.filter(l=>l.lat).map(l=>[l.lat,l.lon])];
+      if(pts.length>1)map.fitBounds(pts,{padding:[30,30]});
+    },300);
+  },[tab,homes,logs,users]);
+
+  const filtered=logs.filter(l=>{
+    if(fUser&&l.user_id!==fUser)return false;
+    if(fFrom&&new Date(l.time_in)<new Date(fFrom))return false;
+    if(fTo&&new Date(l.time_in)>new Date(fTo+"T23:59:59"))return false;
+    return true;
+  });
+  const csv=()=>{
+    const rows=[["Name","Date","Time In","Time Out","Duration","Lat","Lon"],...filtered.map(l=>[l.display_name,fmtD(l.time_in),fmtT(l.time_in),fmtT(l.time_out),fmtDur(l.time_in,l.time_out),l.lat,l.lon])];
+    const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));a.download="bao-logs.csv";a.click();
+  };
+  const promote=async id=>{await sb.from("users").update({role:"admin"}).eq("id",id);toast2("Promoted!");loadAll();};
+  const demote=async id=>{if(id==="admin"){toast2("Cannot demote main admin.",false);return;}await sb.from("users").update({role:"agent"}).eq("id",id);toast2("Demoted.");loadAll();};
+  const del=async id=>{if(id==="admin"){toast2("Cannot delete main admin.",false);return;}if(!confirm('Delete "'+id+'"?'))return;await sb.from("users").delete().eq("id",id);toast2("Deleted.");loadAll();};
+  const add=async()=>{
+    if(!nu.id||!nu.display_name||!nu.pin){toast2("Fill all fields.",false);return;}
+    setAdding(true);const h2=await hashPin(nu.pin);
+    const{error}=await sb.from("users").insert({id:nu.id.toLowerCase().trim(),display_name:nu.display_name,role:nu.role,pin_hash:h2});
+    if(error){toast2(error.message,false);}else{toast2("User added!");setNu({id:"",display_name:"",pin:"",role:"agent"});loadAll();}
+    setAdding(false);
+  };
+  const ts=t=>({padding:"7px 14px",borderRadius:8,border:"none",cursor:"pointer",fontWeight:700,fontSize:13,background:tab===t?O:"transparent",color:tab===t?"#fff":SUB});
+  const inp={background:BG,border:"1px solid "+BORDER,borderRadius:8,color:TEXT,padding:"7px 10px",fontSize:13};
+  return h("div",{style:{minHeight:"100vh",background:BG,paddingBottom:40}},
+    h("header",{style:{background:CARD,borderBottom:"1px solid "+BORDER,padding:"0 16px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between"}},
+      h("div",{style:{display:"flex",alignItems:"center",gap:8}},
+        h("div",{style:{width:30,height:30,background:O,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,color:"#fff",fontSize:13}},"B"),
+        h("span",{style:{color:TEXT,fontWeight:700,fontSize:14}},"BAO Admin")
+      ),
+      h(Btn,{onClick:onLogout,bg:"#27272A",style:{padding:"5px 12px",fontSize:12}},"Logout")
+    ),
+    h("div",{style:{maxWidth:900,margin:"0 auto",padding:"18px 14px"}},
+      toast&&h("div",{style:{background:toast.ok?"#16a34a33":"#dc262633",border:"1px solid "+(toast.ok?"#16a34a":"#dc2626"),borderRadius:10,padding:"10px 16px",color:toast.ok?"#4ade80":"#f87171",textAlign:"center",fontWeight:600,marginBottom:14}},toast.msg),
+      h("div",{style:{display:"flex",gap:4,marginBottom:18,background:CARD,border:"1px solid "+BORDER,borderRadius:10,padding:5,width:"fit-content"}},
+        h("button",{style:ts("map"),onClick:()=>setTab("map")},"🗺 Map"),
+        h("button",{style:ts("logs"),onClick:()=>setTab("logs")},"📋 Logs"),
+        h("button",{style:ts("users"),onClick:()=>setTab("users")},"👥 Users")
+      ),
+      tab==="map"&&h(Card,{style:{padding:0,overflow:"hidden"}},
+        h("div",{ref:mapRef,style:{width:"100%",height:460}}),
+        h("div",{style:{padding:"8px 14px",display:"flex",gap:14,fontSize:12,color:SUB}},
+          h("span",null,"🔵 Home"),h("span",null,"🟢 Time In"),h("span",null,"🔴 Time Out"),
+          h("span",{style:{marginLeft:"auto"}},"Click pins for details & photos")
+        )
+      ),
+      tab==="logs"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
+        h(Card,null,
+          h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
+            h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Agent"),h("select",{value:fUser,onChange:e=>setFUser(e.target.value),style:inp},h("option",{value:""},"All agents"),...users.map(u=>h("option",{key:u.id,value:u.id},u.display_name)))),
+            h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"From"),h("input",{type:"date",value:fFrom,onChange:e=>setFFrom(e.target.value),style:inp})),
+            h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"To"),h("input",{type:"date",value:fTo,onChange:e=>setFTo(e.target.value),style:inp})),
+            h(Btn,{onClick:csv,bg:"#27272A",style:{padding:"7px 12px",fontSize:13}},"⬇ CSV"),
+            h("span",{style:{color:MUTED,fontSize:12,alignSelf:"center"}},filtered.length+" records")
+          )
+        ),
+        h(Card,{style:{padding:0,overflowX:"auto"}},
+          h("table",{style:{width:"100%",fontSize:12}},
+            h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},["Photo","Agent","Date","In","Out","Duration","GPS"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 12px",textAlign:"left",whiteSpace:"nowrap"}},x)))),
+            h("tbody",null,filtered.length===0
+              ?h("tr",null,h("td",{colSpan:7,style:{color:MUTED,textAlign:"center",padding:20}},"No logs found"))
+              :filtered.map((l,i)=>h("tr",{key:l.id,style:{borderBottom:i<filtered.length-1?"1px solid "+BORDER:"none",background:i%2?"#ffffff04":"transparent"}},
+                h("td",{style:{padding:"8px 12px"}},l.blob_id&&h("img",{src:l.blob_id,style:{width:36,height:36,borderRadius:6,objectFit:"cover"},onError:e=>e.target.style.display="none"})),
+                h("td",{style:{padding:"8px 12px",color:TEXT,fontWeight:600}},l.display_name),
+                h("td",{style:{padding:"8px 12px",color:SUB}},fmtD(l.time_in)),
+                h("td",{style:{padding:"8px 12px",color:"#4ade80"}},fmtT(l.time_in)),
+                h("td",{style:{padding:"8px 12px",color:l.time_out?"#f87171":MUTED}},fmtT(l.time_out)),
+                h("td",{style:{padding:"8px 12px",color:O}},fmtDur(l.time_in,l.time_out)),
+                h("td",{style:{padding:"8px 12px",color:MUTED,fontSize:11}},l.lat?.toFixed(3)+","+l.lon?.toFixed(3))
+              ))
+            )
+          )
+        )
+      ),
+      tab==="users"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
+        h(Card,null,
+          h("div",{style:{color:TEXT,fontWeight:700,fontSize:14,marginBottom:12}},"Add New User"),
+          h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
+            ...[["Username","id","juan.reyes"],["Full Name","display_name","Juan Reyes"],["PIN","pin",""]].map(([label,key,ph])=>
+              h("div",{key:key},h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},label),h("input",{type:key==="pin"?"password":"text",placeholder:ph,value:nu[key],onChange:e=>setNu(p=>Object.assign({},p,{[key]:e.target.value})),style:Object.assign({},inp,{width:150})}))
+            ),
+            h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Role"),h("select",{value:nu.role,onChange:e=>setNu(p=>Object.assign({},p,{role:e.target.value})),style:inp},h("option",{value:"agent"},"Agent"),h("option",{value:"admin"},"Admin"))),
+            h(Btn,{onClick:add,disabled:adding,style:{padding:"7px 14px",fontSize:13}},adding?"Adding...":"Add User")
+          )
+        ),
+        h(Card,{style:{padding:0,overflowX:"auto"}},
+          h("table",{style:{width:"100%",fontSize:13}},
+            h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},["Username","Name","Role","Actions"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 14px",textAlign:"left"}},x)))),
+            h("tbody",null,users.map((u,i)=>h("tr",{key:u.id,style:{borderBottom:i<users.length-1?"1px solid "+BORDER:"none"}},
+              h("td",{style:{padding:"9px 14px",color:MUTED,fontFamily:"monospace",fontSize:11}},u.id),
+              h("td",{style:{padding:"9px 14px",color:TEXT,fontWeight:600}},u.display_name),
+              h("td",{style:{padding:"9px 14px"}},h("span",{style:{background:u.role==="admin"?"#16a34a22":"#27272A",color:u.role==="admin"?"#4ade80":SUB,border:"1px solid "+(u.role==="admin"?"#16a34a44":BORDER),borderRadius:20,padding:"2px 10px",fontSize:12,fontWeight:600}},u.role==="admin"?"Admin":"Agent")),
+              h("td",{style:{padding:"9px 14px"}},h("div",{style:{display:"flex",gap:6}},
+                u.role!=="admin"&&h(Btn,{onClick:()=>promote(u.id),bg:"#16a34a",style:{padding:"4px 10px",fontSize:12}},"Promote"),
+                u.role==="admin"&&u.id!=="admin"&&h(Btn,{onClick:()=>demote(u.id),bg:"#ca8a04",style:{padding:"4px 10px",fontSize:12}},"Demote"),
+                u.id!=="admin"&&h(Btn,{onClick:()=>del(u.id),bg:"#dc2626",style:{padding:"4px 10px",fontSize:12}},"Delete")
+              ))
+            )))
+          )
+        )
+      )
+    )
+  );
+}
+
+// ── Root ──────────────────────────────────────────────────────────────────────
+function App(){
+  const[user,setUser]=useState(null),[view,setView]=useState("login"),[chk,setChk]=useState(false);
+  const login=async ud=>{
+    setChk(true);
+    const{data}=await sb.from("home_locations").select("id").eq("user_id",ud.id).maybeSingle();
+    setUser(ud);
+    if(ud.role==="admin")setView("admin");
+    else if(!data)setView("home");
+    else setView("agent");
+    setChk(false);
+  };
+  const logout=()=>{setUser(null);setView("login");};
+  if(chk)return h("div",{style:{minHeight:"100vh",background:BG,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:14}},
+    h("div",{style:{width:52,height:52,background:O,borderRadius:13,display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,fontWeight:800,color:"#fff"}},"B"),
+    h("div",{style:{color:SUB,fontSize:13}},"Loading BAO Field Tracking...")
+  );
+  if(view==="login")return h(Login,{onLogin:login});
+  if(view==="home")return h(HomeLoc,{user,onDone:()=>setView("agent")});
+  if(view==="agent")return h(AgentDash,{user,onLogout:logout});
+  if(view==="admin")return h(AdminDash,{user,onLogout:logout});
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(h(App,null));
+</script>
+</body>
+</html>

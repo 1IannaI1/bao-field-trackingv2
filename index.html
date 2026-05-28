@@ -14,6 +14,8 @@ input:focus,select:focus{border-color:#F97316!important;}
 ::-webkit-scrollbar-track{background:#18181B}
 ::-webkit-scrollbar-thumb{background:#3f3f46;border-radius:3px}
 table{border-collapse:collapse}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.spin{animation:spin .7s linear infinite;display:inline-block;}
 </style>
 </head>
 <body>
@@ -25,11 +27,9 @@ table{border-collapse:collapse}
 <script>
 const{createElement:h,useState,useEffect,useRef}=React;
 const{createClient}=supabase;
-
 const SURL="https://pxhxohybdippppzagcxu.supabase.co";
 const SKEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4aHhvaHliZGlwcHBwemFnY3h1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4OTIxMDcsImV4cCI6MjA5MTQ2ODEwN30.E1ag_mzm8ngeGO7vDeDYUPJChrsGJAsIhrfEW2D3cEs";
 const sb=createClient(SURL,SKEY);
-
 const O="#F97316",BG="#09090B",CARD="#18181B",BORDER="#27272A",MUTED="#71717A",TEXT="#FAFAFA",SUB="#A1A1AA";
 
 async function hashPin(p){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(p));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
@@ -39,7 +39,6 @@ function fmtD(ts){return ts?new Date(ts).toLocaleDateString("en-US",{month:"shor
 function fmtDur(a,b){if(!a||!b)return"—";const ms=new Date(b)-new Date(a),hh=Math.floor(ms/3600000),mm=Math.floor((ms%3600000)/60000);return hh+"h "+mm+"m";}
 function toLocalDT(ts){if(!ts)return"";const d=new Date(ts);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,16);}
 
-// ── Haversine distance ────────────────────────────────────────────────────────
 function haversineKm(lat1,lon1,lat2,lon2){
   const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;
   const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
@@ -48,13 +47,29 @@ function haversineKm(lat1,lon1,lat2,lon2){
 function calcKm(wps){let t=0;for(let i=1;i<wps.length;i++)t+=haversineKm(wps[i-1].lat,wps[i-1].lon,wps[i].lat,wps[i].lon);return Math.round(t*100)/100;}
 
 async function compressImg(file){return new Promise(res=>{const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{URL.revokeObjectURL(url);const MAX=800,scale=img.width>MAX?MAX/img.width:1,w=Math.round(img.width*scale),hh=Math.round(img.height*scale),c=document.createElement("canvas");c.width=w;c.height=hh;c.getContext("2d").drawImage(img,0,0,w,hh);c.toBlob(blob=>res(new File([blob],file.name,{type:"image/jpeg"})),"image/jpeg",0.7);};img.onerror=()=>res(file);img.src=url;});}
-
 async function uploadSelfie(file){
   const comp=await compressImg(file);
   const name="selfies/"+Date.now()+"-"+Math.random().toString(36).slice(2)+".jpg";
   const{error}=await sb.storage.from("selfies").upload(name,comp,{contentType:"image/jpeg"});
   if(error)throw new Error(error.message);
   return sb.storage.from("selfies").getPublicUrl(name).data.publicUrl;
+}
+
+// ── Sync Button ───────────────────────────────────────────────────────────────
+function SyncBtn({onSync}){
+  const[syncing,setSyncing]=useState(false);
+  const go=async()=>{
+    if(syncing)return;
+    setSyncing(true);
+    try{await onSync();}finally{setSyncing(false);}
+  };
+  return h("button",{
+    onClick:go,
+    title:"Sync all data",
+    style:{background:"#27272A",border:"1px solid "+BORDER,color:syncing?O:SUB,borderRadius:8,padding:"5px 10px",fontSize:16,cursor:syncing?"not-allowed":"pointer",display:"flex",alignItems:"center",justifyContent:"center",transition:"color .2s",lineHeight:1}
+  },
+    h("span",{className:syncing?"spin":""},"⟳")
+  );
 }
 
 function Btn({children,onClick,bg,style,disabled}){
@@ -226,25 +241,27 @@ function HomeLoc({user,onDone}){
 // ── Agent Dashboard ───────────────────────────────────────────────────────────
 function AgentDash({user,onLogout}){
   const[logs,setLogs]=useState([]),[now,setNow]=useState(new Date()),[showCam,setShowCam]=useState(false),[mode,setMode]=useState("in"),[sub,setSub]=useState(false),[toast,setToast]=useState(null),[copied,setCopied]=useState(false);
-  const[trackKm,setTrackKm]=useState(0);
+  const[trackKm,setTrackKm]=useState(0),[syncing,setSyncing]=useState(false);
   const wpsRef=useRef([]),intervalRef=useRef(null),activeLogRef=useRef(null);
-
   useEffect(()=>{load();const t=setInterval(()=>setNow(new Date()),1000);return()=>{clearInterval(t);stopRoute();};},[]);
-  const load=async()=>{const{data}=await sb.from("time_logs").select("*").eq("user_id",user.id).order("time_in",{ascending:false}).limit(20);setLogs(data||[]);};
+  const load=async()=>{
+    const{data}=await sb.from("time_logs").select("*").eq("user_id",user.id).order("time_in",{ascending:false}).limit(20);
+    setLogs(data||[]);
+  };
+  const handleSync=async()=>{
+    setSyncing(true);
+    try{await load();}finally{setSyncing(false);}
+  };
   const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3500);};
-
   const latest=logs[0]||null;
   const clocked=latest&&!latest.time_out&&sameDay(latest.time_in,now);
   const forgot=latest&&!latest.time_out&&!sameDay(latest.time_in,now);
-
-  // resume tracking if clocked in on page load
   useEffect(()=>{
     if(clocked&&latest&&!intervalRef.current){
       activeLogRef.current=latest.id;
       startRoute(latest.id);
     }
   },[logs]);
-
   const startRoute=(logId)=>{
     wpsRef.current=[];activeLogRef.current=logId;setTrackKm(0);
     const poll=()=>navigator.geolocation.getCurrentPosition(p=>{
@@ -255,7 +272,6 @@ function AgentDash({user,onLogout}){
     poll();
     intervalRef.current=setInterval(poll,45000);
   };
-
   const stopRoute=async()=>{
     if(intervalRef.current){clearInterval(intervalRef.current);intervalRef.current=null;}
     const wps=wpsRef.current,logId=activeLogRef.current;
@@ -267,7 +283,6 @@ function AgentDash({user,onLogout}){
     }catch(e){console.error("Route save error",e);}
     wpsRef.current=[];activeLogRef.current=null;setTrackKm(0);
   };
-
   const cap=async url=>{
     setShowCam(false);setSub(true);
     try{
@@ -288,7 +303,6 @@ function AgentDash({user,onLogout}){
       load();
     }catch(e){toast2(e.message||"Failed.",false);}finally{setSub(false);}
   };
-
   const dateStr=now.toLocaleDateString("en-US",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
   const timeStr=now.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
   return h("div",{style:{minHeight:"100vh",background:BG,paddingBottom:40}},
@@ -297,8 +311,9 @@ function AgentDash({user,onLogout}){
         h("div",{style:{width:30,height:30,background:O,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,color:"#fff",fontSize:13}},"B"),
         h("span",{style:{color:TEXT,fontWeight:700,fontSize:14}},"BAO Field Tracking")
       ),
-      h("div",{style:{display:"flex",gap:8}},
+      h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
         h("button",{onClick:()=>{navigator.clipboard.writeText(user.id);setCopied(true);setTimeout(()=>setCopied(false),2000);},style:{background:"#27272A",border:"none",color:SUB,borderRadius:20,padding:"3px 10px",fontSize:11,cursor:"pointer"}},copied?"Copied!":"👤 "+user.id.slice(0,10)+"..."),
+        h(SyncBtn,{onSync:handleSync}),
         h(Btn,{onClick:onLogout,bg:"#27272A",style:{padding:"5px 12px",fontSize:12}},"Logout")
       )
     ),
@@ -372,7 +387,6 @@ function RouteTab({routeLogs,users}){
   const[rDate,setRDate]=useState(new Date().toISOString().slice(0,10));
   const[rUser,setRUser]=useState("");
   const rMapRef=useRef(),rMapObj=useRef();
-
   const getRange=()=>{
     const base=rDate?new Date(rDate):new Date();
     if(period==="daily"){const d=base.toISOString().slice(0,10);return{from:d,to:d};}
@@ -384,30 +398,51 @@ function RouteTab({routeLogs,users}){
     const y=base.getFullYear(),m=base.getMonth();
     return{from:new Date(y,m,1).toISOString().slice(0,10),to:new Date(y,m+1,0).toISOString().slice(0,10)};
   };
-
   const{from,to}=getRange();
   const filtered=routeLogs.filter(r=>{
     if(rUser&&r.user_id!==rUser)return false;
     if(r.date<from||r.date>to)return false;
     return true;
   });
-
   const agentColors=["#F97316","#3b82f6","#22c55e","#a855f7","#ec4899","#14b8a6","#f59e0b","#06b6d4"];
   const agentColorMap={};
   users.forEach((u,i)=>agentColorMap[u.id]=agentColors[i%agentColors.length]);
-
   const summary=users.map(u=>{
     const ul=filtered.filter(r=>r.user_id===u.id);
     const km=ul.reduce((s,r)=>s+(r.total_km||0),0);
     const days=[...new Set(ul.map(r=>r.date))].length;
     return{...u,km:Math.round(km*100)/100,days,count:ul.length};
   }).filter(u=>u.count>0);
-
   const grandKm=Math.round(summary.reduce((s,u)=>s+u.km,0)*100)/100;
-
   const periodLabel=period==="daily"?rDate:period==="weekly"?"Week of "+from:new Date(from).toLocaleDateString("en-US",{month:"long",year:"numeric"});
 
-  // Draw map
+  // ── Route CSV Export ────────────────────────────────────────────────────────
+  const routeCsv=()=>{
+    const rows=[
+      ["Agent","User ID","Date","Waypoints","Distance (km)","Start Lat","Start Lon","End Lat","End Lon"],
+      ...filtered.map(r=>{
+        const wps=r.waypoints||[];
+        const startPt=wps[0]||{};
+        const endPt=wps[wps.length-1]||{};
+        return[
+          r.display_name,
+          r.user_id,
+          r.date,
+          wps.length,
+          (r.total_km||0).toFixed(2),
+          startPt.lat||"",
+          startPt.lon||"",
+          endPt.lat||"",
+          endPt.lon||""
+        ];
+      })
+    ];
+    const a=document.createElement("a");
+    a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));
+    a.download="bao-routes-"+from+(from!==to?"-to-"+to:"")+".csv";
+    a.click();
+  };
+
   useEffect(()=>{
     setTimeout(()=>{
       if(!rMapRef.current)return;
@@ -418,7 +453,6 @@ function RouteTab({routeLogs,users}){
         rMapObj.current=map;
       }
       const map=rMapObj.current;
-      // clear non-tile layers
       map.eachLayer(layer=>{if(!layer._url)map.removeLayer(layer);});
       const allPts=[];
       filtered.forEach(r=>{
@@ -439,9 +473,7 @@ function RouteTab({routeLogs,users}){
 
   const inp={background:BG,border:"1px solid "+BORDER,borderRadius:8,color:TEXT,padding:"7px 10px",fontSize:13};
   const pts=t=>({padding:"5px 14px",borderRadius:7,border:"none",cursor:"pointer",fontWeight:700,fontSize:12,background:period===t?O:"transparent",color:period===t?"#fff":SUB});
-
   return h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
-    // Filters
     h(Card,null,
       h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
         h("div",null,
@@ -459,10 +491,10 @@ function RouteTab({routeLogs,users}){
             h("option",{value:""},"All agents"),
             ...users.map(u=>h("option",{key:u.id,value:u.id},u.display_name))
           )
-        )
+        ),
+        h(Btn,{onClick:routeCsv,bg:"#27272A",style:{padding:"7px 12px",fontSize:13,alignSelf:"flex-end"}},"⬇ CSV")
       )
     ),
-    // Summary cards
     summary.length>0&&h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10}},
       ...summary.map(u=>h(Card,{key:u.id,style:{padding:"12px 14px",borderLeft:"3px solid "+(agentColorMap[u.id]||O)}},
         h("div",{style:{color:SUB,fontSize:10,textTransform:"uppercase",letterSpacing:1,marginBottom:3}},"Agent"),
@@ -477,7 +509,6 @@ function RouteTab({routeLogs,users}){
         h("div",{style:{color:MUTED,fontSize:11,marginTop:2}},"km combined")
       )
     ),
-    // Map
     h(Card,{style:{padding:0,overflow:"hidden"}},
       h("div",{ref:rMapRef,style:{width:"100%",height:440}}),
       h("div",{style:{padding:"8px 14px",display:"flex",gap:14,fontSize:12,color:SUB,flexWrap:"wrap"}},
@@ -485,7 +516,6 @@ function RouteTab({routeLogs,users}){
         h("span",{style:{marginLeft:"auto"}},filtered.length+" route"+(filtered.length!==1?"s":"")+" shown")
       )
     ),
-    // Detail table
     filtered.length>0&&h(Card,{style:{padding:0,overflowX:"auto"}},
       h("table",{style:{width:"100%",fontSize:12}},
         h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},
@@ -516,9 +546,10 @@ function AdminDash({user,onLogout}){
   const[mfUser,setMfUser]=useState(""),[mfFrom,setMfFrom]=useState(""),[mfTo,setMfTo]=useState(""),[mfType,setMfType]=useState("all");
   const[mapReady,setMapReady]=useState(false);
   const mapRef=useRef(),mapObj=useRef(),markersLayerRef=useRef();
-
   const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3000);};
+
   useEffect(()=>{loadAll();},[]);
+
   const loadAll=async()=>{
     const[{data:l},{data:u},{data:hh},{data:r}]=await Promise.all([
       sb.from("time_logs").select("*").order("time_in",{ascending:false}),
@@ -527,6 +558,11 @@ function AdminDash({user,onLogout}){
       sb.from("route_logs").select("*").order("date",{ascending:false})
     ]);
     setLogs(l||[]);setUsers(u||[]);setHomes(hh||[]);setRouteLogs(r||[]);
+  };
+
+  const handleSync=async()=>{
+    await loadAll();
+    toast2("Data synced ✓");
   };
 
   useEffect(()=>{
@@ -570,10 +606,12 @@ function AdminDash({user,onLogout}){
     if(fTo&&new Date(l.time_in)>new Date(fTo+"T23:59:59"))return false;
     return true;
   });
+
   const csv=()=>{
     const rows=[["Name","Date","Time In","Time Out","Duration","Lat","Lon"],...filtered.map(l=>[l.display_name,fmtD(l.time_in),fmtT(l.time_in),fmtT(l.time_out),fmtDur(l.time_in,l.time_out),l.lat,l.lon])];
     const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));a.download="bao-logs.csv";a.click();
   };
+
   const delLog=async id=>{
     if(!confirm("Delete this log entry? This cannot be undone."))return;
     const{error}=await sb.from("time_logs").delete().eq("id",id);
@@ -595,16 +633,21 @@ function AdminDash({user,onLogout}){
     if(error){toast2(error.message,false);}else{toast2("User added!");setNu({id:"",display_name:"",pin:"",role:"agent"});loadAll();}
     setAdding(false);
   };
+
   const ts=t=>({padding:"7px 14px",borderRadius:8,border:"none",cursor:"pointer",fontWeight:700,fontSize:13,background:tab===t?O:"transparent",color:tab===t?"#fff":SUB});
   const mts=t=>({padding:"5px 12px",borderRadius:7,border:"none",cursor:"pointer",fontWeight:700,fontSize:12,background:mfType===t?O:"transparent",color:mfType===t?"#fff":SUB});
   const inp={background:BG,border:"1px solid "+BORDER,borderRadius:8,color:TEXT,padding:"7px 10px",fontSize:13};
+
   return h("div",{style:{minHeight:"100vh",background:BG,paddingBottom:40}},
     h("header",{style:{background:CARD,borderBottom:"1px solid "+BORDER,padding:"0 16px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between"}},
       h("div",{style:{display:"flex",alignItems:"center",gap:8}},
         h("div",{style:{width:30,height:30,background:O,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,color:"#fff",fontSize:13}},"B"),
         h("span",{style:{color:TEXT,fontWeight:700,fontSize:14}},"BAO Admin")
       ),
-      h(Btn,{onClick:onLogout,bg:"#27272A",style:{padding:"5px 12px",fontSize:12}},"Logout")
+      h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+        h(SyncBtn,{onSync:handleSync}),
+        h(Btn,{onClick:onLogout,bg:"#27272A",style:{padding:"5px 12px",fontSize:12}},"Logout")
+      )
     ),
     h("div",{style:{maxWidth:900,margin:"0 auto",padding:"18px 14px"}},
       toast&&h("div",{style:{background:toast.ok?"#16a34a33":"#dc262633",border:"1px solid "+(toast.ok?"#16a34a":"#dc2626"),borderRadius:10,padding:"10px 16px",color:toast.ok?"#4ade80":"#f87171",textAlign:"center",fontWeight:600,marginBottom:14}},toast.msg),
@@ -614,6 +657,7 @@ function AdminDash({user,onLogout}){
         h("button",{style:ts("route"),onClick:()=>setTab("route")},"📍 Route"),
         h("button",{style:ts("users"),onClick:()=>setTab("users")},"👥 Users")
       ),
+
       tab==="map"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
         h(Card,null,
           h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
@@ -640,6 +684,7 @@ function AdminDash({user,onLogout}){
           )
         )
       ),
+
       tab==="logs"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
         h(Card,null,
           h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
@@ -674,7 +719,9 @@ function AdminDash({user,onLogout}){
           )
         )
       ),
+
       tab==="route"&&h(RouteTab,{routeLogs,users}),
+
       tab==="users"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
         h(Card,null,
           h("div",{style:{color:TEXT,fontWeight:700,fontSize:14,marginBottom:12}},"Add New User"),
@@ -729,7 +776,6 @@ function App(){
   if(view==="agent")return h(AgentDash,{user,onLogout:logout});
   if(view==="admin")return h(AdminDash,{user,onLogout:logout});
 }
-
 ReactDOM.createRoot(document.getElementById("root")).render(h(App,null));
 </script>
 </body>

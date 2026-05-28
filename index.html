@@ -39,6 +39,14 @@ function fmtD(ts){return ts?new Date(ts).toLocaleDateString("en-US",{month:"shor
 function fmtDur(a,b){if(!a||!b)return"—";const ms=new Date(b)-new Date(a),hh=Math.floor(ms/3600000),mm=Math.floor((ms%3600000)/60000);return hh+"h "+mm+"m";}
 function toLocalDT(ts){if(!ts)return"";const d=new Date(ts);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,16);}
 
+// ── Haversine distance ────────────────────────────────────────────────────────
+function haversineKm(lat1,lon1,lat2,lon2){
+  const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function calcKm(wps){let t=0;for(let i=1;i<wps.length;i++)t+=haversineKm(wps[i-1].lat,wps[i-1].lon,wps[i].lat,wps[i].lon);return Math.round(t*100)/100;}
+
 async function compressImg(file){return new Promise(res=>{const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{URL.revokeObjectURL(url);const MAX=800,scale=img.width>MAX?MAX/img.width:1,w=Math.round(img.width*scale),hh=Math.round(img.height*scale),c=document.createElement("canvas");c.width=w;c.height=hh;c.getContext("2d").drawImage(img,0,0,w,hh);c.toBlob(blob=>res(new File([blob],file.name,{type:"image/jpeg"})),"image/jpeg",0.7);};img.onerror=()=>res(file);img.src=url;});}
 
 async function uploadSelfie(file){
@@ -93,8 +101,8 @@ function SelfieModal({isOpen,title,onCapture,onCancel}){
       h("div",{style:{display:"flex",gap:10,marginTop:14}},
         h(Btn,{onClick:onCancel,bg:"#27272A",style:{flex:1}},"Cancel"),
         !pre
-          ? h(Btn,{onClick:snap,disabled:!rdy,style:{flex:1}},"📷 Take Selfie")
-          : h("div",{style:{display:"flex",gap:8,flex:1}},
+          ?h(Btn,{onClick:snap,disabled:!rdy,style:{flex:1}},"📷 Take Selfie")
+          :h("div",{style:{display:"flex",gap:8,flex:1}},
               h(Btn,{onClick:retake,bg:"#27272A",style:{flex:1}},"↺ Retake"),
               h(Btn,{onClick:confirm,disabled:up,style:{flex:1}},up?"Uploading...":"✓ Use Photo")
             )
@@ -106,17 +114,8 @@ function SelfieModal({isOpen,title,onCapture,onCancel}){
 // ── Edit Log Modal ────────────────────────────────────────────────────────────
 function EditLogModal({isOpen,log,onSave,onCancel}){
   const[timeIn,setTimeIn]=useState(""),[timeOut,setTimeOut]=useState(""),[saving,setSaving]=useState(false);
-  useEffect(()=>{
-    if(!isOpen||!log)return;
-    setTimeIn(toLocalDT(log.time_in));
-    setTimeOut(toLocalDT(log.time_out));
-  },[isOpen,log]);
-  const save=async()=>{
-    if(!timeIn){return;}
-    setSaving(true);
-    await onSave({time_in:new Date(timeIn).toISOString(),time_out:timeOut?new Date(timeOut).toISOString():null});
-    setSaving(false);
-  };
+  useEffect(()=>{if(!isOpen||!log)return;setTimeIn(toLocalDT(log.time_in));setTimeOut(toLocalDT(log.time_out));},[isOpen,log]);
+  const save=async()=>{if(!timeIn)return;setSaving(true);await onSave({time_in:new Date(timeIn).toISOString(),time_out:timeOut?new Date(timeOut).toISOString():null});setSaving(false);};
   if(!isOpen||!log)return null;
   const inp={width:"100%",background:BG,border:"1px solid "+BORDER,borderRadius:8,padding:"9px 11px",color:TEXT,fontSize:13,boxSizing:"border-box",colorScheme:"dark"};
   const lbl={color:SUB,fontSize:12,display:"block",marginBottom:5};
@@ -128,13 +127,9 @@ function EditLogModal({isOpen,log,onSave,onCancel}){
       ),
       h("div",{style:{background:"#27272A",borderRadius:8,padding:"8px 12px",marginBottom:16,fontSize:12,color:SUB}},
         h("span",{style:{color:TEXT,fontWeight:600}},log.display_name),
-        h("span",null," · "),
-        h("span",null,fmtD(log.time_in))
+        h("span",null," · "),h("span",null,fmtD(log.time_in))
       ),
-      h("div",{style:{marginBottom:14}},
-        h("label",{style:lbl},"Time In"),
-        h("input",{type:"datetime-local",value:timeIn,onChange:e=>setTimeIn(e.target.value),style:inp})
-      ),
+      h("div",{style:{marginBottom:14}},h("label",{style:lbl},"Time In"),h("input",{type:"datetime-local",value:timeIn,onChange:e=>setTimeIn(e.target.value),style:inp})),
       h("div",{style:{marginBottom:20}},
         h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}},
           h("label",{style:Object.assign({},lbl,{marginBottom:0})},"Time Out"),
@@ -231,12 +226,48 @@ function HomeLoc({user,onDone}){
 // ── Agent Dashboard ───────────────────────────────────────────────────────────
 function AgentDash({user,onLogout}){
   const[logs,setLogs]=useState([]),[now,setNow]=useState(new Date()),[showCam,setShowCam]=useState(false),[mode,setMode]=useState("in"),[sub,setSub]=useState(false),[toast,setToast]=useState(null),[copied,setCopied]=useState(false);
-  useEffect(()=>{load();const t=setInterval(()=>setNow(new Date()),1000);return()=>clearInterval(t);},[]);
+  const[trackKm,setTrackKm]=useState(0);
+  const wpsRef=useRef([]),intervalRef=useRef(null),activeLogRef=useRef(null);
+
+  useEffect(()=>{load();const t=setInterval(()=>setNow(new Date()),1000);return()=>{clearInterval(t);stopRoute();};},[]);
   const load=async()=>{const{data}=await sb.from("time_logs").select("*").eq("user_id",user.id).order("time_in",{ascending:false}).limit(20);setLogs(data||[]);};
   const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3500);};
+
   const latest=logs[0]||null;
   const clocked=latest&&!latest.time_out&&sameDay(latest.time_in,now);
   const forgot=latest&&!latest.time_out&&!sameDay(latest.time_in,now);
+
+  // resume tracking if clocked in on page load
+  useEffect(()=>{
+    if(clocked&&latest&&!intervalRef.current){
+      activeLogRef.current=latest.id;
+      startRoute(latest.id);
+    }
+  },[logs]);
+
+  const startRoute=(logId)=>{
+    wpsRef.current=[];activeLogRef.current=logId;setTrackKm(0);
+    const poll=()=>navigator.geolocation.getCurrentPosition(p=>{
+      const pt={lat:p.coords.latitude,lon:p.coords.longitude,ts:new Date().toISOString()};
+      wpsRef.current=[...wpsRef.current,pt];
+      setTrackKm(calcKm(wpsRef.current));
+    },()=>{},{enableHighAccuracy:false,timeout:10000,maximumAge:30000});
+    poll();
+    intervalRef.current=setInterval(poll,45000);
+  };
+
+  const stopRoute=async()=>{
+    if(intervalRef.current){clearInterval(intervalRef.current);intervalRef.current=null;}
+    const wps=wpsRef.current,logId=activeLogRef.current;
+    if(!logId||wps.length===0)return;
+    const totalKm=calcKm(wps);
+    const today=new Date().toISOString().slice(0,10);
+    try{
+      await sb.from("route_logs").upsert({id:logId,user_id:user.id,display_name:user.display_name,date:today,waypoints:wps,total_km:totalKm});
+    }catch(e){console.error("Route save error",e);}
+    wpsRef.current=[];activeLogRef.current=null;setTrackKm(0);
+  };
+
   const cap=async url=>{
     setShowCam(false);setSub(true);
     try{
@@ -245,14 +276,19 @@ function AgentDash({user,onLogout}){
       if(mode==="in"){
         const id=user.id+"-"+Date.now();
         const{error}=await sb.from("time_logs").insert({id,user_id:user.id,display_name:user.display_name,blob_id:url,lat,lon,time_in:new Date().toISOString()});
-        if(error)throw error;toast2("Time In recorded! ✓");
+        if(error)throw error;
+        startRoute(id);
+        toast2("Time In recorded! Route tracking started 📍");
       }else{
         const{error}=await sb.from("time_logs").update({time_out:new Date().toISOString(),timeout_blob_id:url,timeout_lat:lat,timeout_lon:lon}).eq("id",latest.id);
-        if(error)throw error;toast2("Time Out recorded! ✓");
+        if(error)throw error;
+        await stopRoute();
+        toast2("Time Out recorded! Route saved ✅");
       }
       load();
     }catch(e){toast2(e.message||"Failed.",false);}finally{setSub(false);}
   };
+
   const dateStr=now.toLocaleDateString("en-US",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
   const timeStr=now.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
   return h("div",{style:{minHeight:"100vh",background:BG,paddingBottom:40}},
@@ -284,9 +320,17 @@ function AgentDash({user,onLogout}){
           h("span",{style:{color:TEXT,fontWeight:700,fontSize:15}},"Attendance"),
           h("span",{style:{background:clocked?"#16a34a22":"#27272A",color:clocked?"#4ade80":SUB,border:"1px solid "+(clocked?"#16a34a44":BORDER),borderRadius:20,padding:"2px 10px",fontSize:12,fontWeight:600}},clocked?"Clocked In":"Not Clocked In")
         ),
-        clocked&&latest&&h("div",{style:{background:"#16a34a11",border:"1px solid #16a34a33",borderRadius:8,padding:"9px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:8}},
-          h("span",{style:{fontSize:16}},"⏰"),
-          h("div",null,h("div",{style:{color:"#4ade8099",fontSize:11}},"Clocked in at"),h("div",{style:{color:"#4ade80",fontWeight:700,fontSize:13}},fmtT(latest.time_in)))
+        clocked&&latest&&h("div",{style:{background:"#16a34a11",border:"1px solid #16a34a33",borderRadius:8,padding:"9px 12px",marginBottom:12}},
+          h("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:8}},
+            h("span",{style:{fontSize:16}},"⏰"),
+            h("div",null,h("div",{style:{color:"#4ade8099",fontSize:11}},"Clocked in at"),h("div",{style:{color:"#4ade80",fontWeight:700,fontSize:13}},fmtT(latest.time_in)))
+          ),
+          h("div",{style:{display:"flex",alignItems:"center",gap:7,background:"#F9731611",border:"1px solid #F9731633",borderRadius:6,padding:"5px 10px"}},
+            h("span",{style:{width:6,height:6,background:O,borderRadius:"50%",display:"inline-block",flexShrink:0}}),
+            h("span",{style:{fontSize:11,color:SUB}},"Route tracking active · "),
+            h("span",{style:{fontSize:12,color:O,fontWeight:700}},trackKm.toFixed(2)+" km"),
+            h("span",{style:{fontSize:11,color:MUTED}}," · syncs on Time Out")
+          )
         ),
         sub&&h("div",{style:{color:SUB,fontSize:13,textAlign:"center",marginBottom:10}},"📡 Getting GPS & submitting..."),
         h("button",{disabled:sub,onClick:()=>{setMode(clocked?"out":"in");setShowCam(true);},style:{width:"100%",padding:13,borderRadius:10,border:"none",fontSize:15,fontWeight:700,background:sub?"#3f3f46":clocked?"#dc2626":O,color:sub?MUTED:"#fff",cursor:sub?"not-allowed":"pointer"}},
@@ -322,9 +366,150 @@ function AgentDash({user,onLogout}){
   );
 }
 
+// ── Route Tab ─────────────────────────────────────────────────────────────────
+function RouteTab({routeLogs,users}){
+  const[period,setPeriod]=useState("daily");
+  const[rDate,setRDate]=useState(new Date().toISOString().slice(0,10));
+  const[rUser,setRUser]=useState("");
+  const rMapRef=useRef(),rMapObj=useRef();
+
+  const getRange=()=>{
+    const base=rDate?new Date(rDate):new Date();
+    if(period==="daily"){const d=base.toISOString().slice(0,10);return{from:d,to:d};}
+    if(period==="weekly"){
+      const day=base.getDay(),mon=new Date(base);mon.setDate(base.getDate()-(day===0?6:day-1));
+      const sun=new Date(mon);sun.setDate(mon.getDate()+6);
+      return{from:mon.toISOString().slice(0,10),to:sun.toISOString().slice(0,10)};
+    }
+    const y=base.getFullYear(),m=base.getMonth();
+    return{from:new Date(y,m,1).toISOString().slice(0,10),to:new Date(y,m+1,0).toISOString().slice(0,10)};
+  };
+
+  const{from,to}=getRange();
+  const filtered=routeLogs.filter(r=>{
+    if(rUser&&r.user_id!==rUser)return false;
+    if(r.date<from||r.date>to)return false;
+    return true;
+  });
+
+  const agentColors=["#F97316","#3b82f6","#22c55e","#a855f7","#ec4899","#14b8a6","#f59e0b","#06b6d4"];
+  const agentColorMap={};
+  users.forEach((u,i)=>agentColorMap[u.id]=agentColors[i%agentColors.length]);
+
+  const summary=users.map(u=>{
+    const ul=filtered.filter(r=>r.user_id===u.id);
+    const km=ul.reduce((s,r)=>s+(r.total_km||0),0);
+    const days=[...new Set(ul.map(r=>r.date))].length;
+    return{...u,km:Math.round(km*100)/100,days,count:ul.length};
+  }).filter(u=>u.count>0);
+
+  const grandKm=Math.round(summary.reduce((s,u)=>s+u.km,0)*100)/100;
+
+  const periodLabel=period==="daily"?rDate:period==="weekly"?"Week of "+from:new Date(from).toLocaleDateString("en-US",{month:"long",year:"numeric"});
+
+  // Draw map
+  useEffect(()=>{
+    setTimeout(()=>{
+      if(!rMapRef.current)return;
+      const L=window.L;
+      if(!rMapObj.current){
+        const map=L.map(rMapRef.current).setView([12.88,121.77],6);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+        rMapObj.current=map;
+      }
+      const map=rMapObj.current;
+      // clear non-tile layers
+      map.eachLayer(layer=>{if(!layer._url)map.removeLayer(layer);});
+      const allPts=[];
+      filtered.forEach(r=>{
+        if(!r.waypoints||r.waypoints.length===0)return;
+        const pts=r.waypoints.map(w=>[w.lat,w.lon]);
+        const color=agentColorMap[r.user_id]||O;
+        const u=users.find(x=>x.id===r.user_id);
+        L.polyline(pts,{color,weight:4,opacity:0.85}).addTo(map)
+          .bindPopup("<b>"+(u?.display_name||r.user_id)+"</b><br/>"+r.date+"<br/>"+r.total_km+" km");
+        const mkIcon=(c)=>L.divIcon({html:'<div style="width:11px;height:11px;background:'+c+';border:2px solid #fff;border-radius:50%"></div>',className:"",iconAnchor:[5,5]});
+        L.marker(pts[0],{icon:mkIcon("#22c55e")}).addTo(map).bindPopup("🟢 Start · "+(u?.display_name||r.user_id));
+        L.marker(pts[pts.length-1],{icon:mkIcon("#ef4444")}).addTo(map).bindPopup("🔴 End · "+(u?.display_name||r.user_id));
+        allPts.push(...pts);
+      });
+      if(allPts.length>1)map.fitBounds(allPts,{padding:[30,30]});
+    },300);
+  },[filtered.length,rUser,rDate,period,routeLogs.length]);
+
+  const inp={background:BG,border:"1px solid "+BORDER,borderRadius:8,color:TEXT,padding:"7px 10px",fontSize:13};
+  const pts=t=>({padding:"5px 14px",borderRadius:7,border:"none",cursor:"pointer",fontWeight:700,fontSize:12,background:period===t?O:"transparent",color:period===t?"#fff":SUB});
+
+  return h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
+    // Filters
+    h(Card,null,
+      h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
+        h("div",null,
+          h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Period"),
+          h("div",{style:{display:"flex",background:BG,border:"1px solid "+BORDER,borderRadius:8,overflow:"hidden"}},
+            h("button",{style:pts("daily"),onClick:()=>setPeriod("daily")},"Daily"),
+            h("button",{style:pts("weekly"),onClick:()=>setPeriod("weekly")},"Weekly"),
+            h("button",{style:pts("monthly"),onClick:()=>setPeriod("monthly")},"Monthly")
+          )
+        ),
+        h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Date"),h("input",{type:"date",value:rDate,onChange:e=>setRDate(e.target.value),style:inp})),
+        h("div",null,
+          h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Agent"),
+          h("select",{value:rUser,onChange:e=>setRUser(e.target.value),style:inp},
+            h("option",{value:""},"All agents"),
+            ...users.map(u=>h("option",{key:u.id,value:u.id},u.display_name))
+          )
+        )
+      )
+    ),
+    // Summary cards
+    summary.length>0&&h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10}},
+      ...summary.map(u=>h(Card,{key:u.id,style:{padding:"12px 14px",borderLeft:"3px solid "+(agentColorMap[u.id]||O)}},
+        h("div",{style:{color:SUB,fontSize:10,textTransform:"uppercase",letterSpacing:1,marginBottom:3}},"Agent"),
+        h("div",{style:{color:TEXT,fontWeight:700,fontSize:13,marginBottom:6}},u.display_name),
+        h("div",{style:{color:agentColorMap[u.id]||O,fontSize:22,fontWeight:800,lineHeight:1}},u.km.toFixed(2)),
+        h("div",{style:{color:MUTED,fontSize:11,marginTop:2}},"km · "+u.days+" day"+(u.days!==1?"s":""))
+      )),
+      h(Card,{style:{padding:"12px 14px",border:"1px solid "+O+"44",background:"#F9731608"}},
+        h("div",{style:{color:SUB,fontSize:10,textTransform:"uppercase",letterSpacing:1,marginBottom:3}},"Total"),
+        h("div",{style:{color:TEXT,fontWeight:700,fontSize:13,marginBottom:6}},periodLabel),
+        h("div",{style:{color:O,fontSize:22,fontWeight:800,lineHeight:1}},grandKm.toFixed(2)),
+        h("div",{style:{color:MUTED,fontSize:11,marginTop:2}},"km combined")
+      )
+    ),
+    // Map
+    h(Card,{style:{padding:0,overflow:"hidden"}},
+      h("div",{ref:rMapRef,style:{width:"100%",height:440}}),
+      h("div",{style:{padding:"8px 14px",display:"flex",gap:14,fontSize:12,color:SUB,flexWrap:"wrap"}},
+        h("span",null,"🟢 Start"),h("span",null,"🔴 End"),h("span",null,"— Route path"),
+        h("span",{style:{marginLeft:"auto"}},filtered.length+" route"+(filtered.length!==1?"s":"")+" shown")
+      )
+    ),
+    // Detail table
+    filtered.length>0&&h(Card,{style:{padding:0,overflowX:"auto"}},
+      h("table",{style:{width:"100%",fontSize:12}},
+        h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},
+          ["Agent","Date","Waypoints","Distance"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 12px",textAlign:"left",whiteSpace:"nowrap"}},x))
+        )),
+        h("tbody",null,...filtered.map((r,i)=>h("tr",{key:r.id,style:{borderBottom:i<filtered.length-1?"1px solid "+BORDER:"none",background:i%2?"#ffffff04":"transparent"}},
+          h("td",{style:{padding:"8px 12px",color:TEXT,fontWeight:600}},r.display_name),
+          h("td",{style:{padding:"8px 12px",color:SUB}},r.date),
+          h("td",{style:{padding:"8px 12px",color:MUTED}},(r.waypoints?.length||0)+" pts"),
+          h("td",{style:{padding:"8px 12px",color:O,fontWeight:700}},(r.total_km||0).toFixed(2)+" km")
+        )))
+      )
+    ),
+    filtered.length===0&&h(Card,{style:{textAlign:"center",padding:"36px 20px"}},
+      h("div",{style:{fontSize:30,marginBottom:10}},"📍"),
+      h("div",{style:{color:TEXT,fontWeight:600,marginBottom:5}},"No route data yet"),
+      h("div",{style:{color:MUTED,fontSize:13}},"Routes are recorded automatically when agents clock in and out.")
+    )
+  );
+}
+
 // ── Admin Dashboard ───────────────────────────────────────────────────────────
 function AdminDash({user,onLogout}){
-  const[tab,setTab]=useState("logs"),[logs,setLogs]=useState([]),[users,setUsers]=useState([]),[homes,setHomes]=useState([]);
+  const[tab,setTab]=useState("logs"),[logs,setLogs]=useState([]),[users,setUsers]=useState([]),[homes,setHomes]=useState([]),[routeLogs,setRouteLogs]=useState([]);
   const[fUser,setFUser]=useState(""),[fFrom,setFFrom]=useState(""),[fTo,setFTo]=useState("");
   const[toast,setToast]=useState(null),[nu,setNu]=useState({id:"",display_name:"",pin:"",role:"agent"}),[adding,setAdding]=useState(false);
   const[editLog,setEditLog]=useState(null);
@@ -335,12 +520,13 @@ function AdminDash({user,onLogout}){
   const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3000);};
   useEffect(()=>{loadAll();},[]);
   const loadAll=async()=>{
-    const[{data:l},{data:u},{data:hh}]=await Promise.all([
+    const[{data:l},{data:u},{data:hh},{data:r}]=await Promise.all([
       sb.from("time_logs").select("*").order("time_in",{ascending:false}),
       sb.from("users").select("*").order("display_name"),
-      sb.from("home_locations").select("*")
+      sb.from("home_locations").select("*"),
+      sb.from("route_logs").select("*").order("date",{ascending:false})
     ]);
-    setLogs(l||[]);setUsers(u||[]);setHomes(hh||[]);
+    setLogs(l||[]);setUsers(u||[]);setHomes(hh||[]);setRouteLogs(r||[]);
   };
 
   useEffect(()=>{
@@ -425,6 +611,7 @@ function AdminDash({user,onLogout}){
       h("div",{style:{display:"flex",gap:4,marginBottom:18,background:CARD,border:"1px solid "+BORDER,borderRadius:10,padding:5,width:"fit-content"}},
         h("button",{style:ts("map"),onClick:()=>setTab("map")},"🗺 Map"),
         h("button",{style:ts("logs"),onClick:()=>setTab("logs")},"📋 Logs"),
+        h("button",{style:ts("route"),onClick:()=>setTab("route")},"📍 Route"),
         h("button",{style:ts("users"),onClick:()=>setTab("users")},"👥 Users")
       ),
       tab==="map"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
@@ -487,6 +674,7 @@ function AdminDash({user,onLogout}){
           )
         )
       ),
+      tab==="route"&&h(RouteTab,{routeLogs,users}),
       tab==="users"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
         h(Card,null,
           h("div",{style:{color:TEXT,fontWeight:700,fontSize:14,marginBottom:12}},"Add New User"),

@@ -32,13 +32,24 @@ const SKEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI
 const sb=createClient(SURL,SKEY);
 const O="#F97316",BG="#09090B",CARD="#18181B",BORDER="#27272A",MUTED="#71717A",TEXT="#FAFAFA",SUB="#A1A1AA";
 
+// ── localStorage waypoint buffer key ─────────────────────────────────────────
+// Key: "bao_wps_<logId>"  Value: JSON array of {lat,lon,ts}
+const WPS_PREFIX="bao_wps_";
+function loadWpsBuffer(logId){try{return JSON.parse(localStorage.getItem(WPS_PREFIX+logId)||"[]");}catch{return[];}}
+function saveWpsBuffer(logId,wps){try{localStorage.setItem(WPS_PREFIX+logId,JSON.stringify(wps));}catch{}}
+function clearWpsBuffer(logId){localStorage.removeItem(WPS_PREFIX+logId);}
+// Also persist the active logId so a page reload can resume tracking
+const ACTIVE_KEY="bao_active_log";
+function saveActiveLog(obj){localStorage.setItem(ACTIVE_KEY,JSON.stringify(obj));}
+function loadActiveLog(){try{return JSON.parse(localStorage.getItem(ACTIVE_KEY)||"null");}catch{return null;}}
+function clearActiveLog(){localStorage.removeItem(ACTIVE_KEY);}
+
 async function hashPin(p){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(p));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
 function sameDay(a,b){const da=new Date(a),db=new Date(b);return da.getFullYear()===db.getFullYear()&&da.getMonth()===db.getMonth()&&da.getDate()===db.getDate();}
 function fmtT(ts){return ts?new Date(ts).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",hour12:true}):"—";}
 function fmtD(ts){return ts?new Date(ts).toLocaleDateString("en-US",{month:"short",day:"2-digit",year:"numeric"}):"—";}
 function fmtDur(a,b){if(!a||!b)return"—";const ms=new Date(b)-new Date(a),hh=Math.floor(ms/3600000),mm=Math.floor((ms%3600000)/60000);return hh+"h "+mm+"m";}
 function toLocalDT(ts){if(!ts)return"";const d=new Date(ts);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,16);}
-
 function haversineKm(lat1,lon1,lat2,lon2){
   const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;
   const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
@@ -58,16 +69,8 @@ async function uploadSelfie(file){
 // ── Sync Button ───────────────────────────────────────────────────────────────
 function SyncBtn({onSync}){
   const[syncing,setSyncing]=useState(false);
-  const go=async()=>{
-    if(syncing)return;
-    setSyncing(true);
-    try{await onSync();}finally{setSyncing(false);}
-  };
-  return h("button",{
-    onClick:go,
-    title:"Sync all data",
-    style:{background:"#27272A",border:"1px solid "+BORDER,color:syncing?O:SUB,borderRadius:8,padding:"5px 10px",fontSize:16,cursor:syncing?"not-allowed":"pointer",display:"flex",alignItems:"center",justifyContent:"center",transition:"color .2s",lineHeight:1}
-  },
+  const go=async()=>{if(syncing)return;setSyncing(true);try{await onSync();}finally{setSyncing(false);}};
+  return h("button",{onClick:go,title:"Sync all data",style:{background:"#27272A",border:"1px solid "+BORDER,color:syncing?O:SUB,borderRadius:8,padding:"5px 10px",fontSize:16,cursor:syncing?"not-allowed":"pointer",display:"flex",alignItems:"center",justifyContent:"center",transition:"color .2s",lineHeight:1}},
     h("span",{className:syncing?"spin":""},"⟳")
   );
 }
@@ -240,49 +243,129 @@ function HomeLoc({user,onDone}){
 
 // ── Agent Dashboard ───────────────────────────────────────────────────────────
 function AgentDash({user,onLogout}){
-  const[logs,setLogs]=useState([]),[now,setNow]=useState(new Date()),[showCam,setShowCam]=useState(false),[mode,setMode]=useState("in"),[sub,setSub]=useState(false),[toast,setToast]=useState(null),[copied,setCopied]=useState(false);
-  const[trackKm,setTrackKm]=useState(0),[syncing,setSyncing]=useState(false);
-  const wpsRef=useRef([]),intervalRef=useRef(null),activeLogRef=useRef(null);
-  useEffect(()=>{load();const t=setInterval(()=>setNow(new Date()),1000);return()=>{clearInterval(t);stopRoute();};},[]);
+  const[logs,setLogs]=useState([]),[now,setNow]=useState(new Date());
+  const[showCam,setShowCam]=useState(false),[mode,setMode]=useState("in");
+  const[sub,setSub]=useState(false),[toast,setToast]=useState(null),[copied,setCopied]=useState(false);
+  const[trackKm,setTrackKm]=useState(0),[wpCount,setWpCount]=useState(0),[gpsStatus,setGpsStatus]=useState("idle");
+  // gpsStatus: "idle" | "watching" | "error"
+
+  const watchIdRef=useRef(null);    // watchPosition ID
+  const activeLogRef=useRef(null);  // current log ID being tracked
+
+  useEffect(()=>{
+    load();
+    const t=setInterval(()=>setNow(new Date()),1000);
+    // Resume any tracking that was live before page reload
+    resumeIfNeeded();
+    return()=>{
+      clearInterval(t);
+      stopWatch(); // do NOT flush on unmount — only flush on explicit clock-out
+    };
+  },[]);
+
   const load=async()=>{
     const{data}=await sb.from("time_logs").select("*").eq("user_id",user.id).order("time_in",{ascending:false}).limit(20);
     setLogs(data||[]);
   };
-  const handleSync=async()=>{
-    setSyncing(true);
-    try{await load();}finally{setSyncing(false);}
+
+  // Resume tracking if there's a persisted active session (page reload while clocked in)
+  const resumeIfNeeded=()=>{
+    const saved=loadActiveLog();
+    if(!saved||saved.userId!==user.id)return;
+    // Check if the log is still from today
+    const today=new Date().toISOString().slice(0,10);
+    if(saved.date!==today){clearActiveLog();return;}
+    activeLogRef.current=saved.logId;
+    const existing=loadWpsBuffer(saved.logId);
+    if(existing.length>0){setTrackKm(calcKm(existing));setWpCount(existing.length);}
+    startWatch(saved.logId);
   };
+
+  // ── watchPosition-based tracking ────────────────────────────────────────────
+  const startWatch=(logId)=>{
+    if(watchIdRef.current!==null)return; // already watching
+    activeLogRef.current=logId;
+    setGpsStatus("watching");
+
+    watchIdRef.current=navigator.geolocation.watchPosition(
+      (pos)=>{
+        const pt={lat:pos.coords.latitude,lon:pos.coords.longitude,ts:new Date().toISOString()};
+        const buf=loadWpsBuffer(logId);
+        // Deduplicate: skip if moved less than ~5m from last point
+        if(buf.length>0){
+          const last=buf[buf.length-1];
+          const dist=haversineKm(last.lat,last.lon,pt.lat,pt.lon)*1000; // metres
+          if(dist<5)return;
+        }
+        const updated=[...buf,pt];
+        saveWpsBuffer(logId,updated);
+        setTrackKm(calcKm(updated));
+        setWpCount(updated.length);
+        setGpsStatus("watching");
+      },
+      (err)=>{
+        console.warn("GPS watch error:",err.message);
+        setGpsStatus("error");
+        // Don't stop — watchPosition auto-retries when signal returns
+      },
+      {
+        enableHighAccuracy:true,
+        timeout:30000,
+        maximumAge:10000   // accept cached position up to 10s old
+      }
+    );
+  };
+
+  const stopWatch=()=>{
+    if(watchIdRef.current!==null){
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current=null;
+    }
+    setGpsStatus("idle");
+  };
+
+  // Called only on Time Out — flushes buffered waypoints to Supabase
+  const flushRoute=async(logId,userId,displayName)=>{
+    const wps=loadWpsBuffer(logId);
+    if(wps.length===0){clearWpsBuffer(logId);clearActiveLog();return;}
+    const totalKm=calcKm(wps);
+    const date=new Date().toISOString().slice(0,10);
+    try{
+      await sb.from("route_logs").upsert({
+        id:logId,
+        user_id:userId,
+        display_name:displayName,
+        date,
+        waypoints:wps,
+        total_km:totalKm
+      });
+      clearWpsBuffer(logId);
+      clearActiveLog();
+    }catch(e){
+      console.error("Route flush error",e);
+      // Keep buffer — will retry next clock-in or manual sync
+    }
+    setTrackKm(0);setWpCount(0);
+  };
+
   const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3500);};
+
   const latest=logs[0]||null;
   const clocked=latest&&!latest.time_out&&sameDay(latest.time_in,now);
   const forgot=latest&&!latest.time_out&&!sameDay(latest.time_in,now);
+
+  // Start watch after logs load if clocked in
   useEffect(()=>{
-    if(clocked&&latest&&!intervalRef.current){
+    if(clocked&&latest&&watchIdRef.current===null&&activeLogRef.current===latest.id){
+      // already resumed via resumeIfNeeded, nothing to do
+    }else if(clocked&&latest&&watchIdRef.current===null&&activeLogRef.current===null){
+      // Edge: clocked in but no active session (e.g. first load of the day)
       activeLogRef.current=latest.id;
-      startRoute(latest.id);
+      saveActiveLog({logId:latest.id,userId:user.id,date:new Date().toISOString().slice(0,10)});
+      startWatch(latest.id);
     }
   },[logs]);
-  const startRoute=(logId)=>{
-    wpsRef.current=[];activeLogRef.current=logId;setTrackKm(0);
-    const poll=()=>navigator.geolocation.getCurrentPosition(p=>{
-      const pt={lat:p.coords.latitude,lon:p.coords.longitude,ts:new Date().toISOString()};
-      wpsRef.current=[...wpsRef.current,pt];
-      setTrackKm(calcKm(wpsRef.current));
-    },()=>{},{enableHighAccuracy:false,timeout:10000,maximumAge:30000});
-    poll();
-    intervalRef.current=setInterval(poll,45000);
-  };
-  const stopRoute=async()=>{
-    if(intervalRef.current){clearInterval(intervalRef.current);intervalRef.current=null;}
-    const wps=wpsRef.current,logId=activeLogRef.current;
-    if(!logId||wps.length===0)return;
-    const totalKm=calcKm(wps);
-    const today=new Date().toISOString().slice(0,10);
-    try{
-      await sb.from("route_logs").upsert({id:logId,user_id:user.id,display_name:user.display_name,date:today,waypoints:wps,total_km:totalKm});
-    }catch(e){console.error("Route save error",e);}
-    wpsRef.current=[];activeLogRef.current=null;setTrackKm(0);
-  };
+
   const cap=async url=>{
     setShowCam(false);setSub(true);
     try{
@@ -290,21 +373,42 @@ function AgentDash({user,onLogout}){
       const lat=pos.coords.latitude,lon=pos.coords.longitude;
       if(mode==="in"){
         const id=user.id+"-"+Date.now();
-        const{error}=await sb.from("time_logs").insert({id,user_id:user.id,display_name:user.display_name,blob_id:url,lat,lon,time_in:new Date().toISOString()});
+        const{error}=await sb.from("time_logs").insert({
+          id,user_id:user.id,display_name:user.display_name,
+          blob_id:url,lat,lon,time_in:new Date().toISOString()
+        });
         if(error)throw error;
-        startRoute(id);
+        // Seed first waypoint from clock-in GPS
+        saveWpsBuffer(id,[{lat,lon,ts:new Date().toISOString()}]);
+        saveActiveLog({logId:id,userId:user.id,date:new Date().toISOString().slice(0,10)});
+        startWatch(id);
         toast2("Time In recorded! Route tracking started 📍");
       }else{
-        const{error}=await sb.from("time_logs").update({time_out:new Date().toISOString(),timeout_blob_id:url,timeout_lat:lat,timeout_lon:lon}).eq("id",latest.id);
+        // Time Out: stop watch first, then flush
+        stopWatch();
+        const logId=latest.id;
+        const{error}=await sb.from("time_logs").update({
+          time_out:new Date().toISOString(),
+          timeout_blob_id:url,
+          timeout_lat:lat,
+          timeout_lon:lon
+        }).eq("id",logId);
         if(error)throw error;
-        await stopRoute();
+        await flushRoute(logId,user.id,user.display_name);
+        activeLogRef.current=null;
         toast2("Time Out recorded! Route saved ✅");
       }
       load();
     }catch(e){toast2(e.message||"Failed.",false);}finally{setSub(false);}
   };
+
   const dateStr=now.toLocaleDateString("en-US",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
   const timeStr=now.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+
+  const gpsColor=gpsStatus==="watching"?O:gpsStatus==="error"?"#f87171":MUTED;
+  const gpsLabel=gpsStatus==="watching"?"GPS active":gpsStatus==="error"?"GPS signal lost (retrying...)":"GPS idle";
+  const gpsDot=gpsStatus==="watching"?O:gpsStatus==="error"?"#f87171":"#3f3f46";
+
   return h("div",{style:{minHeight:"100vh",background:BG,paddingBottom:40}},
     h("header",{style:{background:CARD,borderBottom:"1px solid "+BORDER,padding:"0 16px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between"}},
       h("div",{style:{display:"flex",alignItems:"center",gap:8}},
@@ -313,7 +417,7 @@ function AgentDash({user,onLogout}){
       ),
       h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
         h("button",{onClick:()=>{navigator.clipboard.writeText(user.id);setCopied(true);setTimeout(()=>setCopied(false),2000);},style:{background:"#27272A",border:"none",color:SUB,borderRadius:20,padding:"3px 10px",fontSize:11,cursor:"pointer"}},copied?"Copied!":"👤 "+user.id.slice(0,10)+"..."),
-        h(SyncBtn,{onSync:handleSync}),
+        h(SyncBtn,{onSync:async()=>await load()}),
         h(Btn,{onClick:onLogout,bg:"#27272A",style:{padding:"5px 12px",fontSize:12}},"Logout")
       )
     ),
@@ -335,17 +439,27 @@ function AgentDash({user,onLogout}){
           h("span",{style:{color:TEXT,fontWeight:700,fontSize:15}},"Attendance"),
           h("span",{style:{background:clocked?"#16a34a22":"#27272A",color:clocked?"#4ade80":SUB,border:"1px solid "+(clocked?"#16a34a44":BORDER),borderRadius:20,padding:"2px 10px",fontSize:12,fontWeight:600}},clocked?"Clocked In":"Not Clocked In")
         ),
+        // ── Live route tracking status panel ──────────────────────────────────
         clocked&&latest&&h("div",{style:{background:"#16a34a11",border:"1px solid #16a34a33",borderRadius:8,padding:"9px 12px",marginBottom:12}},
           h("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:8}},
             h("span",{style:{fontSize:16}},"⏰"),
-            h("div",null,h("div",{style:{color:"#4ade8099",fontSize:11}},"Clocked in at"),h("div",{style:{color:"#4ade80",fontWeight:700,fontSize:13}},fmtT(latest.time_in)))
+            h("div",null,
+              h("div",{style:{color:"#4ade8099",fontSize:11}},"Clocked in at"),
+              h("div",{style:{color:"#4ade80",fontWeight:700,fontSize:13}},fmtT(latest.time_in))
+            )
           ),
-          h("div",{style:{display:"flex",alignItems:"center",gap:7,background:"#F9731611",border:"1px solid #F9731633",borderRadius:6,padding:"5px 10px"}},
-            h("span",{style:{width:6,height:6,background:O,borderRadius:"50%",display:"inline-block",flexShrink:0}}),
-            h("span",{style:{fontSize:11,color:SUB}},"Route tracking active · "),
-            h("span",{style:{fontSize:12,color:O,fontWeight:700}},trackKm.toFixed(2)+" km"),
-            h("span",{style:{fontSize:11,color:MUTED}}," · syncs on Time Out")
-          )
+          // GPS status row
+          h("div",{style:{display:"flex",alignItems:"center",gap:7,background:"#F9731611",border:"1px solid #F9731633",borderRadius:6,padding:"7px 10px",marginBottom:6}},
+            h("span",{style:{width:7,height:7,background:gpsDot,borderRadius:"50%",display:"inline-block",flexShrink:0}}),
+            h("span",{style:{fontSize:11,color:gpsColor,fontWeight:600,flex:1}},gpsLabel),
+            h("span",{style:{fontSize:12,color:O,fontWeight:700}},trackKm.toFixed(2)+" km")
+          ),
+          // Waypoint count + offline notice
+          h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
+            h("span",{style:{fontSize:11,color:MUTED}},"📍 "+wpCount+" waypoint"+(wpCount!==1?"s":"")+" recorded locally"),
+            h("span",{style:{fontSize:10,color:MUTED}},"uploads on Time Out")
+          ),
+          gpsStatus==="error"&&h("div",{style:{marginTop:6,fontSize:11,color:"#fbbf24",background:"#ca8a0411",border:"1px solid #ca8a0433",borderRadius:5,padding:"4px 8px"}},"⚠ Offline — waypoints buffered in device storage. Route will upload when you clock out.")
         ),
         sub&&h("div",{style:{color:SUB,fontSize:13,textAlign:"center",marginBottom:10}},"📡 Getting GPS & submitting..."),
         h("button",{disabled:sub,onClick:()=>{setMode(clocked?"out":"in");setShowCam(true);},style:{width:"100%",padding:13,borderRadius:10,border:"none",fontSize:15,fontWeight:700,background:sub?"#3f3f46":clocked?"#dc2626":O,color:sub?MUTED:"#fff",cursor:sub?"not-allowed":"pointer"}},
@@ -416,25 +530,13 @@ function RouteTab({routeLogs,users}){
   const grandKm=Math.round(summary.reduce((s,u)=>s+u.km,0)*100)/100;
   const periodLabel=period==="daily"?rDate:period==="weekly"?"Week of "+from:new Date(from).toLocaleDateString("en-US",{month:"long",year:"numeric"});
 
-  // ── Route CSV Export ────────────────────────────────────────────────────────
   const routeCsv=()=>{
     const rows=[
       ["Agent","User ID","Date","Waypoints","Distance (km)","Start Lat","Start Lon","End Lat","End Lon"],
       ...filtered.map(r=>{
         const wps=r.waypoints||[];
-        const startPt=wps[0]||{};
-        const endPt=wps[wps.length-1]||{};
-        return[
-          r.display_name,
-          r.user_id,
-          r.date,
-          wps.length,
-          (r.total_km||0).toFixed(2),
-          startPt.lat||"",
-          startPt.lon||"",
-          endPt.lat||"",
-          endPt.lon||""
-        ];
+        const s=wps[0]||{},e=wps[wps.length-1]||{};
+        return[r.display_name,r.user_id,r.date,wps.length,(r.total_km||0).toFixed(2),s.lat||"",s.lon||"",e.lat||"",e.lon||""];
       })
     ];
     const a=document.createElement("a");
@@ -460,19 +562,21 @@ function RouteTab({routeLogs,users}){
         const pts=r.waypoints.map(w=>[w.lat,w.lon]);
         const color=agentColorMap[r.user_id]||O;
         const u=users.find(x=>x.id===r.user_id);
-        L.polyline(pts,{color,weight:4,opacity:0.85}).addTo(map)
-          .bindPopup("<b>"+(u?.display_name||r.user_id)+"</b><br/>"+r.date+"<br/>"+r.total_km+" km");
-        const mkIcon=(c)=>L.divIcon({html:'<div style="width:11px;height:11px;background:'+c+';border:2px solid #fff;border-radius:50%"></div>',className:"",iconAnchor:[5,5]});
-        L.marker(pts[0],{icon:mkIcon("#22c55e")}).addTo(map).bindPopup("🟢 Start · "+(u?.display_name||r.user_id));
-        L.marker(pts[pts.length-1],{icon:mkIcon("#ef4444")}).addTo(map).bindPopup("🔴 End · "+(u?.display_name||r.user_id));
+        // Thick colored polyline
+        L.polyline(pts,{color,weight:5,opacity:0.9}).addTo(map)
+          .bindPopup("<b>"+(u?.display_name||r.user_id)+"</b><br/>"+r.date+"<br/>"+r.total_km+" km<br/>"+pts.length+" waypoints");
+        const mkIcon=(c,size)=>L.divIcon({html:'<div style="width:'+size+'px;height:'+size+'px;background:'+c+';border:2.5px solid #fff;border-radius:50%;box-shadow:0 0 4px rgba(0,0,0,.5)"></div>',className:"",iconAnchor:[size/2,size/2]});
+        L.marker(pts[0],{icon:mkIcon("#22c55e",13)}).addTo(map).bindPopup("🟢 Start · "+(u?.display_name||r.user_id)+"<br/>"+r.date);
+        L.marker(pts[pts.length-1],{icon:mkIcon("#ef4444",13)}).addTo(map).bindPopup("🔴 End · "+(u?.display_name||r.user_id)+"<br/>"+r.date);
         allPts.push(...pts);
       });
-      if(allPts.length>1)map.fitBounds(allPts,{padding:[30,30]});
+      if(allPts.length>1)map.fitBounds(allPts,{padding:[40,40]});
     },300);
   },[filtered.length,rUser,rDate,period,routeLogs.length]);
 
   const inp={background:BG,border:"1px solid "+BORDER,borderRadius:8,color:TEXT,padding:"7px 10px",fontSize:13};
   const pts=t=>({padding:"5px 14px",borderRadius:7,border:"none",cursor:"pointer",fontWeight:700,fontSize:12,background:period===t?O:"transparent",color:period===t?"#fff":SUB});
+
   return h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
     h(Card,null,
       h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
@@ -495,6 +599,16 @@ function RouteTab({routeLogs,users}){
         h(Btn,{onClick:routeCsv,bg:"#27272A",style:{padding:"7px 12px",fontSize:13,alignSelf:"flex-end"}},"⬇ CSV")
       )
     ),
+    // Color legend per agent
+    users.length>0&&h(Card,{style:{padding:"10px 14px"}},
+      h("div",{style:{display:"flex",flexWrap:"wrap",gap:12,alignItems:"center"}},
+        h("span",{style:{color:SUB,fontSize:11,fontWeight:600}},"ROUTE COLORS:"),
+        ...users.map(u=>h("div",{key:u.id,style:{display:"flex",alignItems:"center",gap:5}},
+          h("div",{style:{width:22,height:4,background:agentColorMap[u.id]||O,borderRadius:2}}),
+          h("span",{style:{color:TEXT,fontSize:12}},u.display_name)
+        ))
+      )
+    ),
     summary.length>0&&h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10}},
       ...summary.map(u=>h(Card,{key:u.id,style:{padding:"12px 14px",borderLeft:"3px solid "+(agentColorMap[u.id]||O)}},
         h("div",{style:{color:SUB,fontSize:10,textTransform:"uppercase",letterSpacing:1,marginBottom:3}},"Agent"),
@@ -510,22 +624,23 @@ function RouteTab({routeLogs,users}){
       )
     ),
     h(Card,{style:{padding:0,overflow:"hidden"}},
-      h("div",{ref:rMapRef,style:{width:"100%",height:440}}),
-      h("div",{style:{padding:"8px 14px",display:"flex",gap:14,fontSize:12,color:SUB,flexWrap:"wrap"}},
-        h("span",null,"🟢 Start"),h("span",null,"🔴 End"),h("span",null,"— Route path"),
+      h("div",{ref:rMapRef,style:{width:"100%",height:480}}),
+      h("div",{style:{padding:"8px 14px",display:"flex",gap:14,fontSize:12,color:SUB,flexWrap:"wrap",alignItems:"center"}},
+        h("span",null,"🟢 Start"),h("span",null,"🔴 End"),h("span",null,"— Colored by agent"),
         h("span",{style:{marginLeft:"auto"}},filtered.length+" route"+(filtered.length!==1?"s":"")+" shown")
       )
     ),
     filtered.length>0&&h(Card,{style:{padding:0,overflowX:"auto"}},
       h("table",{style:{width:"100%",fontSize:12}},
         h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},
-          ["Agent","Date","Waypoints","Distance"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 12px",textAlign:"left",whiteSpace:"nowrap"}},x))
+          ["","Agent","Date","Waypoints","Distance"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 12px",textAlign:"left",whiteSpace:"nowrap"}},x))
         )),
         h("tbody",null,...filtered.map((r,i)=>h("tr",{key:r.id,style:{borderBottom:i<filtered.length-1?"1px solid "+BORDER:"none",background:i%2?"#ffffff04":"transparent"}},
+          h("td",{style:{padding:"8px 8px 8px 12px"}},h("div",{style:{width:14,height:14,borderRadius:"50%",background:agentColorMap[r.user_id]||O}})),
           h("td",{style:{padding:"8px 12px",color:TEXT,fontWeight:600}},r.display_name),
           h("td",{style:{padding:"8px 12px",color:SUB}},r.date),
           h("td",{style:{padding:"8px 12px",color:MUTED}},(r.waypoints?.length||0)+" pts"),
-          h("td",{style:{padding:"8px 12px",color:O,fontWeight:700}},(r.total_km||0).toFixed(2)+" km")
+          h("td",{style:{padding:"8px 12px",color:agentColorMap[r.user_id]||O,fontWeight:700}},(r.total_km||0).toFixed(2)+" km")
         )))
       )
     ),
@@ -547,9 +662,7 @@ function AdminDash({user,onLogout}){
   const[mapReady,setMapReady]=useState(false);
   const mapRef=useRef(),mapObj=useRef(),markersLayerRef=useRef();
   const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3000);};
-
   useEffect(()=>{loadAll();},[]);
-
   const loadAll=async()=>{
     const[{data:l},{data:u},{data:hh},{data:r}]=await Promise.all([
       sb.from("time_logs").select("*").order("time_in",{ascending:false}),
@@ -559,12 +672,7 @@ function AdminDash({user,onLogout}){
     ]);
     setLogs(l||[]);setUsers(u||[]);setHomes(hh||[]);setRouteLogs(r||[]);
   };
-
-  const handleSync=async()=>{
-    await loadAll();
-    toast2("Data synced ✓");
-  };
-
+  const handleSync=async()=>{await loadAll();toast2("Data synced ✓");};
   useEffect(()=>{
     if(tab!=="map")return;
     setTimeout(()=>{
@@ -577,7 +685,6 @@ function AdminDash({user,onLogout}){
       setMapReady(true);
     },300);
   },[tab]);
-
   useEffect(()=>{
     if(!mapReady||!mapObj.current||!markersLayerRef.current)return;
     const L=window.L,layer=markersLayerRef.current,map=mapObj.current;
@@ -599,19 +706,16 @@ function AdminDash({user,onLogout}){
     if(mfType==="all"||mfType==="timeout")filteredLogs.filter(l=>l.timeout_lat).forEach(l=>pts.push([l.timeout_lat,l.timeout_lon]));
     if(pts.length>1)map.fitBounds(pts,{padding:[30,30]});
   },[mapReady,mfUser,mfFrom,mfTo,mfType,logs,homes,users]);
-
   const filtered=logs.filter(l=>{
     if(fUser&&l.user_id!==fUser)return false;
     if(fFrom&&new Date(l.time_in)<new Date(fFrom))return false;
     if(fTo&&new Date(l.time_in)>new Date(fTo+"T23:59:59"))return false;
     return true;
   });
-
   const csv=()=>{
     const rows=[["Name","Date","Time In","Time Out","Duration","Lat","Lon"],...filtered.map(l=>[l.display_name,fmtD(l.time_in),fmtT(l.time_in),fmtT(l.time_out),fmtDur(l.time_in,l.time_out),l.lat,l.lon])];
     const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));a.download="bao-logs.csv";a.click();
   };
-
   const delLog=async id=>{
     if(!confirm("Delete this log entry? This cannot be undone."))return;
     const{error}=await sb.from("time_logs").delete().eq("id",id);
@@ -633,11 +737,9 @@ function AdminDash({user,onLogout}){
     if(error){toast2(error.message,false);}else{toast2("User added!");setNu({id:"",display_name:"",pin:"",role:"agent"});loadAll();}
     setAdding(false);
   };
-
   const ts=t=>({padding:"7px 14px",borderRadius:8,border:"none",cursor:"pointer",fontWeight:700,fontSize:13,background:tab===t?O:"transparent",color:tab===t?"#fff":SUB});
   const mts=t=>({padding:"5px 12px",borderRadius:7,border:"none",cursor:"pointer",fontWeight:700,fontSize:12,background:mfType===t?O:"transparent",color:mfType===t?"#fff":SUB});
   const inp={background:BG,border:"1px solid "+BORDER,borderRadius:8,color:TEXT,padding:"7px 10px",fontSize:13};
-
   return h("div",{style:{minHeight:"100vh",background:BG,paddingBottom:40}},
     h("header",{style:{background:CARD,borderBottom:"1px solid "+BORDER,padding:"0 16px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between"}},
       h("div",{style:{display:"flex",alignItems:"center",gap:8}},
@@ -657,7 +759,6 @@ function AdminDash({user,onLogout}){
         h("button",{style:ts("route"),onClick:()=>setTab("route")},"📍 Route"),
         h("button",{style:ts("users"),onClick:()=>setTab("users")},"👥 Users")
       ),
-
       tab==="map"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
         h(Card,null,
           h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
@@ -684,7 +785,6 @@ function AdminDash({user,onLogout}){
           )
         )
       ),
-
       tab==="logs"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
         h(Card,null,
           h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
@@ -719,9 +819,7 @@ function AdminDash({user,onLogout}){
           )
         )
       ),
-
       tab==="route"&&h(RouteTab,{routeLogs,users}),
-
       tab==="users"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
         h(Card,null,
           h("div",{style:{color:TEXT,fontWeight:700,fontSize:14,marginBottom:12}},"Add New User"),

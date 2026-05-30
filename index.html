@@ -33,12 +33,10 @@ const sb=createClient(SURL,SKEY);
 const O="#F97316",BG="#09090B",CARD="#18181B",BORDER="#27272A",MUTED="#71717A",TEXT="#FAFAFA",SUB="#A1A1AA";
 
 // ── localStorage waypoint buffer key ─────────────────────────────────────────
-// Key: "bao_wps_<logId>"  Value: JSON array of {lat,lon,ts}
 const WPS_PREFIX="bao_wps_";
 function loadWpsBuffer(logId){try{return JSON.parse(localStorage.getItem(WPS_PREFIX+logId)||"[]");}catch{return[];}}
 function saveWpsBuffer(logId,wps){try{localStorage.setItem(WPS_PREFIX+logId,JSON.stringify(wps));}catch{}}
 function clearWpsBuffer(logId){localStorage.removeItem(WPS_PREFIX+logId);}
-// Also persist the active logId so a page reload can resume tracking
 const ACTIVE_KEY="bao_active_log";
 function saveActiveLog(obj){localStorage.setItem(ACTIVE_KEY,JSON.stringify(obj));}
 function loadActiveLog(){try{return JSON.parse(localStorage.getItem(ACTIVE_KEY)||"null");}catch{return null;}}
@@ -57,6 +55,59 @@ function haversineKm(lat1,lon1,lat2,lon2){
 }
 function calcKm(wps){let t=0;for(let i=1;i<wps.length;i++)t+=haversineKm(wps[i-1].lat,wps[i-1].lon,wps[i].lat,wps[i].lon);return Math.round(t*100)/100;}
 
+// ── OSRM Road-Snapping ────────────────────────────────────────────────────────
+// Uses OSRM's Map Matching service to snap raw GPS waypoints onto actual roads.
+// OSRM accepts max 100 coords per request, so we chunk and stitch.
+// Falls back to raw polyline if the API is unavailable or returns an error.
+const OSRM_BASE = "https://router.project-osrm.org/match/v1/driving/";
+const OSRM_CACHE = {}; // in-memory cache keyed by route log id
+
+async function osrmMatchChunk(wps) {
+  // wps: array of {lat, lon}
+  // OSRM coordinate order: lon,lat  (opposite of Leaflet!)
+  const coords = wps.map(w => w.lon.toFixed(6) + "," + w.lat.toFixed(6)).join(";");
+  // radiuses: GPS accuracy tolerance in metres per point (50m is generous for motorbikes)
+  const radiuses = wps.map(() => "50").join(";");
+  const url = OSRM_BASE + coords +
+    "?overview=full&geometries=geojson&radiuses=" + radiuses + "&gaps=split&tidy=true";
+  const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error("OSRM HTTP " + res.status);
+  const json = await res.json();
+  if (json.code !== "Ok") throw new Error("OSRM code: " + json.code);
+  // Each matching is a separate road-snapped segment; concatenate all coordinates
+  const pts = [];
+  for (const matching of json.matchings) {
+    const coords = matching.geometry.coordinates; // [lon, lat] pairs
+    for (const c of coords) pts.push([c[1], c[0]]); // convert to [lat, lon] for Leaflet
+  }
+  return pts;
+}
+
+async function osrmMatchRoute(wps) {
+  // Returns { pts: [[lat,lon],...], snapped: bool }
+  if (!wps || wps.length < 2) return { pts: wps.map(w => [w.lat, w.lon]), snapped: false };
+  // Chunk into groups of 100 with 1-point overlap for continuity
+  const CHUNK = 100;
+  const chunks = [];
+  for (let i = 0; i < wps.length; i += CHUNK - 1) {
+    chunks.push(wps.slice(i, i + CHUNK));
+    if (i + CHUNK >= wps.length) break;
+  }
+  try {
+    const allPts = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const pts = await osrmMatchChunk(chunks[i]);
+      // Skip first point of subsequent chunks to avoid duplicate at stitch point
+      allPts.push(...(i === 0 ? pts : pts.slice(1)));
+    }
+    if (allPts.length < 2) throw new Error("empty result");
+    return { pts: allPts, snapped: true };
+  } catch (e) {
+    console.warn("OSRM match failed, using raw GPS:", e.message);
+    return { pts: wps.map(w => [w.lat, w.lon]), snapped: false };
+  }
+}
+
 async function compressImg(file){return new Promise(res=>{const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{URL.revokeObjectURL(url);const MAX=800,scale=img.width>MAX?MAX/img.width:1,w=Math.round(img.width*scale),hh=Math.round(img.height*scale),c=document.createElement("canvas");c.width=w;c.height=hh;c.getContext("2d").drawImage(img,0,0,w,hh);c.toBlob(blob=>res(new File([blob],file.name,{type:"image/jpeg"})),"image/jpeg",0.7);};img.onerror=()=>res(file);img.src=url;});}
 async function uploadSelfie(file){
   const comp=await compressImg(file);
@@ -66,7 +117,6 @@ async function uploadSelfie(file){
   return sb.storage.from("selfies").getPublicUrl(name).data.publicUrl;
 }
 
-// ── Sync Button ───────────────────────────────────────────────────────────────
 function SyncBtn({onSync}){
   const[syncing,setSyncing]=useState(false);
   const go=async()=>{if(syncing)return;setSyncing(true);try{await onSync();}finally{setSyncing(false);}};
@@ -247,20 +297,15 @@ function AgentDash({user,onLogout}){
   const[showCam,setShowCam]=useState(false),[mode,setMode]=useState("in");
   const[sub,setSub]=useState(false),[toast,setToast]=useState(null),[copied,setCopied]=useState(false);
   const[trackKm,setTrackKm]=useState(0),[wpCount,setWpCount]=useState(0),[gpsStatus,setGpsStatus]=useState("idle");
-  // gpsStatus: "idle" | "watching" | "error"
 
-  const watchIdRef=useRef(null);    // watchPosition ID
-  const activeLogRef=useRef(null);  // current log ID being tracked
+  const watchIdRef=useRef(null);
+  const activeLogRef=useRef(null);
 
   useEffect(()=>{
     load();
     const t=setInterval(()=>setNow(new Date()),1000);
-    // Resume any tracking that was live before page reload
     resumeIfNeeded();
-    return()=>{
-      clearInterval(t);
-      stopWatch(); // do NOT flush on unmount — only flush on explicit clock-out
-    };
+    return()=>{clearInterval(t);stopWatch();};
   },[]);
 
   const load=async()=>{
@@ -268,11 +313,9 @@ function AgentDash({user,onLogout}){
     setLogs(data||[]);
   };
 
-  // Resume tracking if there's a persisted active session (page reload while clocked in)
   const resumeIfNeeded=()=>{
     const saved=loadActiveLog();
     if(!saved||saved.userId!==user.id)return;
-    // Check if the log is still from today
     const today=new Date().toISOString().slice(0,10);
     if(saved.date!==today){clearActiveLog();return;}
     activeLogRef.current=saved.logId;
@@ -281,20 +324,17 @@ function AgentDash({user,onLogout}){
     startWatch(saved.logId);
   };
 
-  // ── watchPosition-based tracking ────────────────────────────────────────────
   const startWatch=(logId)=>{
-    if(watchIdRef.current!==null)return; // already watching
+    if(watchIdRef.current!==null)return;
     activeLogRef.current=logId;
     setGpsStatus("watching");
-
     watchIdRef.current=navigator.geolocation.watchPosition(
       (pos)=>{
         const pt={lat:pos.coords.latitude,lon:pos.coords.longitude,ts:new Date().toISOString()};
         const buf=loadWpsBuffer(logId);
-        // Deduplicate: skip if moved less than ~5m from last point
         if(buf.length>0){
           const last=buf[buf.length-1];
-          const dist=haversineKm(last.lat,last.lon,pt.lat,pt.lon)*1000; // metres
+          const dist=haversineKm(last.lat,last.lon,pt.lat,pt.lon)*1000;
           if(dist<5)return;
         }
         const updated=[...buf,pt];
@@ -303,63 +343,35 @@ function AgentDash({user,onLogout}){
         setWpCount(updated.length);
         setGpsStatus("watching");
       },
-      (err)=>{
-        console.warn("GPS watch error:",err.message);
-        setGpsStatus("error");
-        // Don't stop — watchPosition auto-retries when signal returns
-      },
-      {
-        enableHighAccuracy:true,
-        timeout:30000,
-        maximumAge:10000   // accept cached position up to 10s old
-      }
+      (err)=>{console.warn("GPS watch error:",err.message);setGpsStatus("error");},
+      {enableHighAccuracy:true,timeout:30000,maximumAge:10000}
     );
   };
 
   const stopWatch=()=>{
-    if(watchIdRef.current!==null){
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current=null;
-    }
+    if(watchIdRef.current!==null){navigator.geolocation.clearWatch(watchIdRef.current);watchIdRef.current=null;}
     setGpsStatus("idle");
   };
 
-  // Called only on Time Out — flushes buffered waypoints to Supabase
   const flushRoute=async(logId,userId,displayName)=>{
     const wps=loadWpsBuffer(logId);
     if(wps.length===0){clearWpsBuffer(logId);clearActiveLog();return;}
     const totalKm=calcKm(wps);
     const date=new Date().toISOString().slice(0,10);
     try{
-      await sb.from("route_logs").upsert({
-        id:logId,
-        user_id:userId,
-        display_name:displayName,
-        date,
-        waypoints:wps,
-        total_km:totalKm
-      });
-      clearWpsBuffer(logId);
-      clearActiveLog();
-    }catch(e){
-      console.error("Route flush error",e);
-      // Keep buffer — will retry next clock-in or manual sync
-    }
+      await sb.from("route_logs").upsert({id:logId,user_id:userId,display_name:displayName,date,waypoints:wps,total_km:totalKm});
+      clearWpsBuffer(logId);clearActiveLog();
+    }catch(e){console.error("Route flush error",e);}
     setTrackKm(0);setWpCount(0);
   };
 
   const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3500);};
-
   const latest=logs[0]||null;
   const clocked=latest&&!latest.time_out&&sameDay(latest.time_in,now);
   const forgot=latest&&!latest.time_out&&!sameDay(latest.time_in,now);
 
-  // Start watch after logs load if clocked in
   useEffect(()=>{
-    if(clocked&&latest&&watchIdRef.current===null&&activeLogRef.current===latest.id){
-      // already resumed via resumeIfNeeded, nothing to do
-    }else if(clocked&&latest&&watchIdRef.current===null&&activeLogRef.current===null){
-      // Edge: clocked in but no active session (e.g. first load of the day)
+    if(clocked&&latest&&watchIdRef.current===null&&activeLogRef.current===null){
       activeLogRef.current=latest.id;
       saveActiveLog({logId:latest.id,userId:user.id,date:new Date().toISOString().slice(0,10)});
       startWatch(latest.id);
@@ -373,26 +385,16 @@ function AgentDash({user,onLogout}){
       const lat=pos.coords.latitude,lon=pos.coords.longitude;
       if(mode==="in"){
         const id=user.id+"-"+Date.now();
-        const{error}=await sb.from("time_logs").insert({
-          id,user_id:user.id,display_name:user.display_name,
-          blob_id:url,lat,lon,time_in:new Date().toISOString()
-        });
+        const{error}=await sb.from("time_logs").insert({id,user_id:user.id,display_name:user.display_name,blob_id:url,lat,lon,time_in:new Date().toISOString()});
         if(error)throw error;
-        // Seed first waypoint from clock-in GPS
         saveWpsBuffer(id,[{lat,lon,ts:new Date().toISOString()}]);
         saveActiveLog({logId:id,userId:user.id,date:new Date().toISOString().slice(0,10)});
         startWatch(id);
         toast2("Time In recorded! Route tracking started 📍");
       }else{
-        // Time Out: stop watch first, then flush
         stopWatch();
         const logId=latest.id;
-        const{error}=await sb.from("time_logs").update({
-          time_out:new Date().toISOString(),
-          timeout_blob_id:url,
-          timeout_lat:lat,
-          timeout_lon:lon
-        }).eq("id",logId);
+        const{error}=await sb.from("time_logs").update({time_out:new Date().toISOString(),timeout_blob_id:url,timeout_lat:lat,timeout_lon:lon}).eq("id",logId);
         if(error)throw error;
         await flushRoute(logId,user.id,user.display_name);
         activeLogRef.current=null;
@@ -404,7 +406,6 @@ function AgentDash({user,onLogout}){
 
   const dateStr=now.toLocaleDateString("en-US",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
   const timeStr=now.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-
   const gpsColor=gpsStatus==="watching"?O:gpsStatus==="error"?"#f87171":MUTED;
   const gpsLabel=gpsStatus==="watching"?"GPS active":gpsStatus==="error"?"GPS signal lost (retrying...)":"GPS idle";
   const gpsDot=gpsStatus==="watching"?O:gpsStatus==="error"?"#f87171":"#3f3f46";
@@ -439,7 +440,6 @@ function AgentDash({user,onLogout}){
           h("span",{style:{color:TEXT,fontWeight:700,fontSize:15}},"Attendance"),
           h("span",{style:{background:clocked?"#16a34a22":"#27272A",color:clocked?"#4ade80":SUB,border:"1px solid "+(clocked?"#16a34a44":BORDER),borderRadius:20,padding:"2px 10px",fontSize:12,fontWeight:600}},clocked?"Clocked In":"Not Clocked In")
         ),
-        // ── Live route tracking status panel ──────────────────────────────────
         clocked&&latest&&h("div",{style:{background:"#16a34a11",border:"1px solid #16a34a33",borderRadius:8,padding:"9px 12px",marginBottom:12}},
           h("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:8}},
             h("span",{style:{fontSize:16}},"⏰"),
@@ -448,13 +448,11 @@ function AgentDash({user,onLogout}){
               h("div",{style:{color:"#4ade80",fontWeight:700,fontSize:13}},fmtT(latest.time_in))
             )
           ),
-          // GPS status row
           h("div",{style:{display:"flex",alignItems:"center",gap:7,background:"#F9731611",border:"1px solid #F9731633",borderRadius:6,padding:"7px 10px",marginBottom:6}},
             h("span",{style:{width:7,height:7,background:gpsDot,borderRadius:"50%",display:"inline-block",flexShrink:0}}),
             h("span",{style:{fontSize:11,color:gpsColor,fontWeight:600,flex:1}},gpsLabel),
             h("span",{style:{fontSize:12,color:O,fontWeight:700}},trackKm.toFixed(2)+" km")
           ),
-          // Waypoint count + offline notice
           h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
             h("span",{style:{fontSize:11,color:MUTED}},"📍 "+wpCount+" waypoint"+(wpCount!==1?"s":"")+" recorded locally"),
             h("span",{style:{fontSize:10,color:MUTED}},"uploads on Time Out")
@@ -500,7 +498,10 @@ function RouteTab({routeLogs,users}){
   const[period,setPeriod]=useState("daily");
   const[rDate,setRDate]=useState(new Date().toISOString().slice(0,10));
   const[rUser,setRUser]=useState("");
+  const[snapping,setSnapping]=useState(false); // true while OSRM requests are in-flight
+  const[snapStats,setSnapStats]=useState({}); // { [routeId]: "snapped"|"raw" }
   const rMapRef=useRef(),rMapObj=useRef();
+
   const getRange=()=>{
     const base=rDate?new Date(rDate):new Date();
     if(period==="daily"){const d=base.toISOString().slice(0,10);return{from:d,to:d};}
@@ -545,8 +546,10 @@ function RouteTab({routeLogs,users}){
     a.click();
   };
 
+  // ── Map drawing with OSRM road-snapping ──────────────────────────────────
   useEffect(()=>{
-    setTimeout(()=>{
+    // Step 1: Initialize map if needed
+    setTimeout(async()=>{
       if(!rMapRef.current)return;
       const L=window.L;
       if(!rMapObj.current){
@@ -555,27 +558,75 @@ function RouteTab({routeLogs,users}){
         rMapObj.current=map;
       }
       const map=rMapObj.current;
+
+      // Clear existing route layers (keep tile layer)
       map.eachLayer(layer=>{if(!layer._url)map.removeLayer(layer);});
-      const allPts=[];
-      filtered.forEach(r=>{
-        if(!r.waypoints||r.waypoints.length===0)return;
-        const pts=r.waypoints.map(w=>[w.lat,w.lon]);
+
+      if(filtered.length===0)return;
+
+      setSnapping(true);
+      const allBounds=[];
+      const newSnapStats={};
+
+      // Process each route: try OSRM, fall back to raw
+      for(const r of filtered){
+        if(!r.waypoints||r.waypoints.length===0)continue;
         const color=agentColorMap[r.user_id]||O;
         const u=users.find(x=>x.id===r.user_id);
-        // Thick colored polyline
-        L.polyline(pts,{color,weight:5,opacity:0.9}).addTo(map)
-          .bindPopup("<b>"+(u?.display_name||r.user_id)+"</b><br/>"+r.date+"<br/>"+r.total_km+" km<br/>"+pts.length+" waypoints");
-        const mkIcon=(c,size)=>L.divIcon({html:'<div style="width:'+size+'px;height:'+size+'px;background:'+c+';border:2.5px solid #fff;border-radius:50%;box-shadow:0 0 4px rgba(0,0,0,.5)"></div>',className:"",iconAnchor:[size/2,size/2]});
-        L.marker(pts[0],{icon:mkIcon("#22c55e",13)}).addTo(map).bindPopup("🟢 Start · "+(u?.display_name||r.user_id)+"<br/>"+r.date);
-        L.marker(pts[pts.length-1],{icon:mkIcon("#ef4444",13)}).addTo(map).bindPopup("🔴 End · "+(u?.display_name||r.user_id)+"<br/>"+r.date);
-        allPts.push(...pts);
-      });
-      if(allPts.length>1)map.fitBounds(allPts,{padding:[40,40]});
+        const agentName=u?.display_name||r.user_id;
+
+        // Use OSRM in-memory cache to avoid re-fetching same route
+        let result;
+        if(OSRM_CACHE[r.id]){
+          result=OSRM_CACHE[r.id];
+        }else{
+          result=await osrmMatchRoute(r.waypoints);
+          OSRM_CACHE[r.id]=result;
+        }
+
+        const{pts,snapped}=result;
+        newSnapStats[r.id]=snapped?"snapped":"raw";
+
+        // Draw a subtle shadow line for depth, then the colored route line
+        L.polyline(pts,{color:"#000000",weight:8,opacity:0.25}).addTo(map);
+        const line=L.polyline(pts,{color,weight:5,opacity:0.95}).addTo(map);
+
+        // Popup shows snapping status
+        const snapBadge=snapped
+          ?"<span style='color:#4ade80;font-size:10px'>✓ road-snapped</span>"
+          :"<span style='color:#fbbf24;font-size:10px'>⚠ raw GPS</span>";
+        line.bindPopup(
+          "<b>"+agentName+"</b><br/>"+r.date+
+          "<br/>"+r.total_km+" km · "+pts.length+" pts"+
+          "<br/>"+snapBadge
+        );
+
+        // Start / end markers
+        const mkIcon=(c,sz)=>L.divIcon({
+          html:'<div style="width:'+sz+'px;height:'+sz+'px;background:'+c+';border:2.5px solid #fff;border-radius:50%;box-shadow:0 0 5px rgba(0,0,0,.6)"></div>',
+          className:"",iconAnchor:[sz/2,sz/2]
+        });
+        L.marker(pts[0],{icon:mkIcon("#22c55e",14)}).addTo(map)
+          .bindPopup("🟢 Start · "+agentName+"<br/>"+r.date);
+        L.marker(pts[pts.length-1],{icon:mkIcon("#ef4444",14)}).addTo(map)
+          .bindPopup("🔴 End · "+agentName+"<br/>"+r.date);
+
+        allBounds.push(...pts);
+      }
+
+      setSnapStats(newSnapStats);
+      setSnapping(false);
+
+      if(allBounds.length>1)map.fitBounds(allBounds,{padding:[40,40]});
     },300);
   },[filtered.length,rUser,rDate,period,routeLogs.length]);
 
   const inp={background:BG,border:"1px solid "+BORDER,borderRadius:8,color:TEXT,padding:"7px 10px",fontSize:13};
   const pts=t=>({padding:"5px 14px",borderRadius:7,border:"none",cursor:"pointer",fontWeight:700,fontSize:12,background:period===t?O:"transparent",color:period===t?"#fff":SUB});
+
+  // Count how many routes are snapped vs raw
+  const snappedCount=Object.values(snapStats).filter(v=>v==="snapped").length;
+  const rawCount=Object.values(snapStats).filter(v=>v==="raw").length;
 
   return h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
     h(Card,null,
@@ -601,12 +652,26 @@ function RouteTab({routeLogs,users}){
     ),
     // Color legend per agent
     users.length>0&&h(Card,{style:{padding:"10px 14px"}},
-      h("div",{style:{display:"flex",flexWrap:"wrap",gap:12,alignItems:"center"}},
-        h("span",{style:{color:SUB,fontSize:11,fontWeight:600}},"ROUTE COLORS:"),
-        ...users.map(u=>h("div",{key:u.id,style:{display:"flex",alignItems:"center",gap:5}},
-          h("div",{style:{width:22,height:4,background:agentColorMap[u.id]||O,borderRadius:2}}),
-          h("span",{style:{color:TEXT,fontSize:12}},u.display_name)
-        ))
+      h("div",{style:{display:"flex",flexWrap:"wrap",gap:12,alignItems:"center",justifyContent:"space-between"}},
+        h("div",{style:{display:"flex",flexWrap:"wrap",gap:12,alignItems:"center"}},
+          h("span",{style:{color:SUB,fontSize:11,fontWeight:600}},"ROUTE COLORS:"),
+          ...users.map(u=>h("div",{key:u.id,style:{display:"flex",alignItems:"center",gap:5}},
+            h("div",{style:{width:22,height:4,background:agentColorMap[u.id]||O,borderRadius:2}}),
+            h("span",{style:{color:TEXT,fontSize:12}},u.display_name)
+          ))
+        ),
+        // Snap status badge
+        (snappedCount>0||rawCount>0)&&h("div",{style:{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}},
+          snapping&&h("span",{style:{color:SUB,fontSize:11,display:"flex",alignItems:"center",gap:4}},
+            h("span",{className:"spin",style:{fontSize:12}},"⟳")," Snapping to roads..."
+          ),
+          !snapping&&snappedCount>0&&h("span",{style:{background:"#16a34a22",border:"1px solid #16a34a44",borderRadius:20,padding:"2px 9px",color:"#4ade80",fontSize:11,fontWeight:600}},
+            "✓ "+snappedCount+" road-snapped"
+          ),
+          !snapping&&rawCount>0&&h("span",{style:{background:"#ca8a0422",border:"1px solid #ca8a0444",borderRadius:20,padding:"2px 9px",color:"#fbbf24",fontSize:11,fontWeight:600}},
+            "⚠ "+rawCount+" raw GPS"
+          )
+        )
       )
     ),
     summary.length>0&&h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10}},
@@ -626,21 +691,36 @@ function RouteTab({routeLogs,users}){
     h(Card,{style:{padding:0,overflow:"hidden"}},
       h("div",{ref:rMapRef,style:{width:"100%",height:480}}),
       h("div",{style:{padding:"8px 14px",display:"flex",gap:14,fontSize:12,color:SUB,flexWrap:"wrap",alignItems:"center"}},
-        h("span",null,"🟢 Start"),h("span",null,"🔴 End"),h("span",null,"— Colored by agent"),
+        h("span",null,"🟢 Start"),
+        h("span",null,"🔴 End"),
+        h("span",null,"— Colored by agent"),
+        h("span",{style:{color:"#4ade80",fontSize:11}},"✓ Routes follow actual roads via OSRM"),
         h("span",{style:{marginLeft:"auto"}},filtered.length+" route"+(filtered.length!==1?"s":"")+" shown")
       )
+    ),
+    // Info box explaining road snapping
+    h("div",{style:{background:"#3b82f611",border:"1px solid #3b82f633",borderRadius:10,padding:"10px 14px",fontSize:12,color:"#93c5fd"}},
+      h("span",{style:{fontWeight:700}},"🗺 Road Snapping: "),
+      "Routes are automatically aligned to actual roads using OSRM map matching. If OSRM is unavailable, raw GPS lines are shown with a ⚠ warning. Snapped routes are cached per session — reload to re-fetch."
     ),
     filtered.length>0&&h(Card,{style:{padding:0,overflowX:"auto"}},
       h("table",{style:{width:"100%",fontSize:12}},
         h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},
-          ["","Agent","Date","Waypoints","Distance"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 12px",textAlign:"left",whiteSpace:"nowrap"}},x))
+          ["","Agent","Date","Waypoints","Distance","Snapped"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 12px",textAlign:"left",whiteSpace:"nowrap"}},x))
         )),
         h("tbody",null,...filtered.map((r,i)=>h("tr",{key:r.id,style:{borderBottom:i<filtered.length-1?"1px solid "+BORDER:"none",background:i%2?"#ffffff04":"transparent"}},
           h("td",{style:{padding:"8px 8px 8px 12px"}},h("div",{style:{width:14,height:14,borderRadius:"50%",background:agentColorMap[r.user_id]||O}})),
           h("td",{style:{padding:"8px 12px",color:TEXT,fontWeight:600}},r.display_name),
           h("td",{style:{padding:"8px 12px",color:SUB}},r.date),
           h("td",{style:{padding:"8px 12px",color:MUTED}},(r.waypoints?.length||0)+" pts"),
-          h("td",{style:{padding:"8px 12px",color:agentColorMap[r.user_id]||O,fontWeight:700}},(r.total_km||0).toFixed(2)+" km")
+          h("td",{style:{padding:"8px 12px",color:agentColorMap[r.user_id]||O,fontWeight:700}},(r.total_km||0).toFixed(2)+" km"),
+          h("td",{style:{padding:"8px 12px"}},
+            snapStats[r.id]==="snapped"
+              ?h("span",{style:{color:"#4ade80",fontSize:11,fontWeight:600}},"✓ road")
+              :snapStats[r.id]==="raw"
+              ?h("span",{style:{color:"#fbbf24",fontSize:11,fontWeight:600}},"⚠ raw")
+              :h("span",{style:{color:MUTED,fontSize:11}},"—")
+          )
         )))
       )
     ),

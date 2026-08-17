@@ -731,18 +731,69 @@ function RouteTab({routeLogs,users}){
     )
   );
 }
-
+// ── Add Log Modal (manual time in/out on behalf of agent) ────────────────────
+function AddLogModal({isOpen,users,onSave,onCancel}){
+  const [userId,setUserId]=useState(""),[tIn,setTIn]=useState(""),[tOut,setTOut]=useState(""),[saving,setSaving]=useState(false),[err,setErr]=useState(null);
+  useEffect(()=>{if(!isOpen)return;setUserId("");setTIn("");setTOut("");setSaving(false);setErr(null);},[isOpen]);
+  const save=async()=>{
+    if(!userId){setErr("Select an agent.");return;}
+    if(!tIn){setErr("Time In is required.");return;}
+    if(tOut&&new Date(tOut)<=new Date(tIn)){setErr("Time Out must be after Time In.");return;}
+    setSaving(true);setErr(null);
+    const u=users.find(x=>x.id===userId);
+    const ok=await onSave({user_id:userId,display_name:u?u.display_name:userId,time_in:new Date(tIn).toISOString(),time_out:tOut?new Date(tOut).toISOString():null});
+    setSaving(false);
+    if(ok)onCancel();
+  };
+  if(!isOpen)return null;
+  const inp={width:"100%",background:BG,border:"1px solid "+BORDER,borderRadius:8,padding:"9px 11px",color:TEXT,fontSize:13,boxSizing:"border-box",colorScheme:"dark"};
+  const lbl={color:SUB,fontSize:12,display:"block",marginBottom:5};
+  return h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}},
+    h("div",{style:{background:CARD,border:"1px solid "+BORDER,borderRadius:16,width:"100%",maxWidth:400,padding:24}},
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}},
+        h("span",{style:{color:TEXT,fontWeight:700,fontSize:16}},"➕ Add Log (on behalf of agent)"),
+        h("button",{onClick:onCancel,style:{background:"none",border:"none",color:MUTED,fontSize:24,cursor:"pointer",lineHeight:1}},"×")
+      ),
+      h("div",{style:{marginBottom:14}},h("label",{style:lbl},"Agent"),
+        h("select",{value:userId,onChange:e=>setUserId(e.target.value),style:inp},
+          h("option",{value:""},"— Select agent —"),
+          ...users.map(u=>h("option",{key:u.id,value:u.id},u.display_name))
+        )
+      ),
+      h("div",{style:{marginBottom:14}},h("label",{style:lbl},"Time In *"),h("input",{type:"datetime-local",value:tIn,onChange:e=>setTIn(e.target.value),style:inp})),
+      h("div",{style:{marginBottom:14}},h("label",{style:lbl},"Time Out (leave blank if still working)"),h("input",{type:"datetime-local",value:tOut,onChange:e=>setTOut(e.target.value),style:inp})),
+      err&&h("div",{style:{color:"#f87171",fontSize:13,marginBottom:10,textAlign:"center"}},err),
+      h("div",{style:{display:"flex",gap:10}},
+        h(Btn,{onClick:onCancel,bg:"#27272A",style:{flex:1}},"Cancel"),
+        h(Btn,{onClick:save,disabled:saving,style:{flex:1}},saving?"Saving...":"✓ Save Log")
+      )
+    )
+  );
+}
+function pageList(total,cur){
+  if(total<=7)return Array.from({length:total},(_,i)=>i+1);
+  const want=[1,total,cur-1,cur,cur+1];
+  if(cur<=3)want.push(2,3,4);
+  if(cur>=total-2)want.push(total-1,total-2,total-3);
+  const arr=[...new Set(want)].filter(p=>p>=1&&p<=total).sort((a,b)=>a-b);
+  const out=[];let prev=0;
+  for(const p of arr){if(p-prev>1)out.push("…");out.push(p);prev=p;}
+  return out;
+}
 // ── Admin Dashboard ───────────────────────────────────────────────────────────
 function AdminDash({user,onLogout}){
   const[tab,setTab]=useState("logs"),[logs,setLogs]=useState([]),[users,setUsers]=useState([]),[homes,setHomes]=useState([]),[routeLogs,setRouteLogs]=useState([]);
   const[fUser,setFUser]=useState(""),[fFrom,setFFrom]=useState(""),[fTo,setFTo]=useState("");
   const[toast,setToast]=useState(null),[nu,setNu]=useState({id:"",display_name:"",pin:"",role:"agent"}),[adding,setAdding]=useState(false);
-  const[editLog,setEditLog]=useState(null);
+ const [editLog,setEditLog]=useState(null);
+const [page,setPage]=useState(1);
+const [addOpen,setAddOpen]=useState(false);
   const[mfUser,setMfUser]=useState(""),[mfFrom,setMfFrom]=useState(""),[mfTo,setMfTo]=useState(""),[mfType,setMfType]=useState("all");
   const[mapReady,setMapReady]=useState(false);
   const mapRef=useRef(),mapObj=useRef(),markersLayerRef=useRef();
   const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3000);};
   useEffect(()=>{loadAll();},[]);
+useEffect(()=>{setPage(1);},[fUser,fFrom,fTo]);
   const loadAll=async()=>{
     const[{data:l},{data:u},{data:hh},{data:r}]=await Promise.all([
       sb.from("time_logs").select("*").order("time_in",{ascending:false}),
@@ -787,11 +838,16 @@ function AdminDash({user,onLogout}){
     if(pts.length>1)map.fitBounds(pts,{padding:[30,30]});
   },[mapReady,mfUser,mfFrom,mfTo,mfType,logs,homes,users]);
   const filtered=logs.filter(l=>{
-    if(fUser&&l.user_id!==fUser)return false;
-    if(fFrom&&new Date(l.time_in)<new Date(fFrom))return false;
-    if(fTo&&new Date(l.time_in)>new Date(fTo+"T23:59:59"))return false;
-    return true;
-  });
+if(fUser&&l.user_id!==fUser)return false;
+if(fFrom&&new Date(l.time_in)<new Date(fFrom))return false;
+if(fTo&&new Date(l.time_in)>new Date(fTo+"T23:59:59"))return false;
+return true;
+});
+const PAGE_SIZE=100;
+const totalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
+const safePage=Math.min(page,totalPages);
+const pageRows=filtered.slice((safePage-1)*PAGE_SIZE,safePage*PAGE_SIZE);
+const pgBtn=(dis,active)=>({background:active?O:"#27272A",color:active?"#fff":SUB,border:"none",borderRadius:6,padding:"5px 10px",fontSize:12,fontWeight:700,cursor:dis?"not-allowed":"pointer",opacity:dis?0.45:1,minWidth:32});
   const csv=()=>{
     const rows=[["Name","Date","Time In","Time Out","Duration","Lat","Lon"],...filtered.map(l=>[l.display_name,fmtD(l.time_in),fmtT(l.time_in),fmtT(l.time_out),fmtDur(l.time_in,l.time_out),l.lat,l.lon])];
     const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));a.download="bao-logs.csv";a.click();
@@ -807,6 +863,11 @@ function AdminDash({user,onLogout}){
     if(error){toast2(error.message,false);return;}
     setEditLog(null);toast2("Log updated! ✓");loadAll();
   };
+  const addLog=async payload=>{
+  const {error}=await sb.from("time_logs").insert({id:payload.user_id+"-"+Date.now(),user_id:payload.user_id,display_name:payload.display_name,time_in:payload.time_in,time_out:payload.time_out});
+  if(error){toast2(error.message,false);return false;}
+  toast2("Log added! ✓");loadAll();return true;
+};
   const promote=async id=>{await sb.from("users").update({role:"admin"}).eq("id",id);toast2("Promoted!");loadAll();};
   const demote=async id=>{if(id==="admin"){toast2("Cannot demote main admin.",false);return;}await sb.from("users").update({role:"agent"}).eq("id",id);toast2("Demoted.");loadAll();};
   const del=async id=>{if(id==="admin"){toast2("Cannot delete main admin.",false);return;}if(!confirm('Delete "'+id+'"?'))return;await sb.from("users").delete().eq("id",id);toast2("Deleted.");loadAll();};
@@ -872,7 +933,8 @@ function AdminDash({user,onLogout}){
             h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"From"),h("input",{type:"date",value:fFrom,onChange:e=>setFFrom(e.target.value),style:inp})),
             h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"To"),h("input",{type:"date",value:fTo,onChange:e=>setFTo(e.target.value),style:inp})),
             h(Btn,{onClick:csv,bg:"#27272A",style:{padding:"7px 12px",fontSize:13}},"⬇ CSV"),
-            h("span",{style:{color:MUTED,fontSize:12,alignSelf:"center"}},filtered.length+" records")
+            h(Btn,{onClick:()=>setAddOpen(true),bg:"#16a34a",style:{padding:"7px 12px",fontSize:13}},"➕ Add Log"),
+h("span",{style:{color:MUTED,fontSize:12,alignSelf:"center"}},filtered.length===0?"0 records":"Showing "+((safePage-1)*PAGE_SIZE+1)+"–"+Math.min(safePage*PAGE_SIZE,filtered.length)+" of "+filtered.length)
           )
         ),
         h(Card,{style:{padding:0,overflowX:"auto"}},
@@ -880,14 +942,14 @@ function AdminDash({user,onLogout}){
             h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},["Photo","Agent","Date","In","Out","Duration","GPS","Actions"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 12px",textAlign:"left",whiteSpace:"nowrap"}},x)))),
             h("tbody",null,filtered.length===0
               ?h("tr",null,h("td",{colSpan:8,style:{color:MUTED,textAlign:"center",padding:20}},"No logs found"))
-              :filtered.map((l,i)=>h("tr",{key:l.id,style:{borderBottom:i<filtered.length-1?"1px solid "+BORDER:"none",background:i%2?"#ffffff04":"transparent"}},
+              :pageRows.map((l,i)=>h("tr",{key:l.id,style:{borderBottom:i<pageRows.length-1?"1px solid "+BORDER:"none",background:i%2?"#ffffff04":"transparent"}},
                 h("td",{style:{padding:"8px 12px"}},l.blob_id&&h("img",{src:l.blob_id,style:{width:36,height:36,borderRadius:6,objectFit:"cover"},onError:e=>e.target.style.display="none"})),
                 h("td",{style:{padding:"8px 12px",color:TEXT,fontWeight:600}},l.display_name),
                 h("td",{style:{padding:"8px 12px",color:SUB}},fmtD(l.time_in)),
                 h("td",{style:{padding:"8px 12px",color:"#4ade80"}},fmtT(l.time_in)),
                 h("td",{style:{padding:"8px 12px",color:l.time_out?"#f87171":MUTED}},fmtT(l.time_out)),
                 h("td",{style:{padding:"8px 12px",color:O}},fmtDur(l.time_in,l.time_out)),
-                h("td",{style:{padding:"8px 12px",color:MUTED,fontSize:11}},l.lat?.toFixed(3)+","+l.lon?.toFixed(3)),
+                h("td",{style:{padding:"8px 12px",color:MUTED,fontSize:11}},l.lat!=null&&l.lon!=null?l.lat.toFixed(3)+","+l.lon.toFixed(3):"—"),
                 h("td",{style:{padding:"8px 12px"}},
                   h("div",{style:{display:"flex",gap:5}},
                     h("button",{onClick:()=>setEditLog(l),style:{background:"#27272A",color:"#fff",border:"none",borderRadius:6,padding:"3px 8px",fontSize:11,cursor:"pointer",fontWeight:600}},"✏ Edit"),
@@ -899,6 +961,15 @@ function AdminDash({user,onLogout}){
           )
         )
       ),
+      totalPages>1&&h(Card,{style:{padding:"10px 14px"}},
+h("div",{style:{display:"flex",gap:6,alignItems:"center",justifyContent:"center",flexWrap:"wrap"}},
+h("button",{onClick:()=>setPage(Math.max(1,safePage-1)),disabled:safePage===1,style:pgBtn(safePage===1,false)},"« Prev"),
+...pageList(totalPages,safePage).map((p,i)=>p==="…"
+?h("span",{key:"e"+i,style:{color:MUTED,padding:"0 4px"}},"…")
+:h("button",{key:"p"+p,onClick:()=>setPage(p),style:pgBtn(false,p===safePage)},String(p))),
+h("button",{onClick:()=>setPage(Math.min(totalPages,safePage+1)),disabled:safePage===totalPages,style:pgBtn(safePage===totalPages,false)},"Next »")
+)
+),
       tab==="route"&&h(RouteTab,{routeLogs,users}),
       tab==="users"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
         h(Card,null,
@@ -928,6 +999,7 @@ function AdminDash({user,onLogout}){
         )
       )
     ),
+    ,h(AddLogModal,{isOpen:addOpen,users:users,onSave:addLog,onCancel:()=>setAddOpen(false)})       
     h(EditLogModal,{isOpen:!!editLog,log:editLog,onSave:saveEditLog,onCancel:()=>setEditLog(null)})
   );
 }

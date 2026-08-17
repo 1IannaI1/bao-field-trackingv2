@@ -998,9 +998,9 @@ h("button",{onClick:()=>setPage(Math.min(totalPages,safePage+1)),disabled:safePa
           )
         )
       )
-    ),
-    ,h(AddLogModal,{isOpen:addOpen,users:users,onSave:addLog,onCancel:()=>setAddOpen(false)})       
+    ),      
     h(EditLogModal,{isOpen:!!editLog,log:editLog,onSave:saveEditLog,onCancel:()=>setEditLog(null)})
+    ,h(AddLogModal,{isOpen:addOpen,users:users,onSave:addLog,onCancel:()=>setAddOpen(false)})        
   );
 }
 

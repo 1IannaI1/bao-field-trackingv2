@@ -1,547 +1,2030 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>BAO Field Tracking</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#09090B;font-family:system-ui,-apple-system,sans-serif;color:#FAFAFA}
-input,select{outline:none;}
-input:focus,select:focus{border-color:#F97316!important;}
-::-webkit-scrollbar{width:6px;height:6px}
-::-webkit-scrollbar-track{background:#18181B}
-::-webkit-scrollbar-thumb{background:#3f3f46;border-radius:3px}
-table{border-collapse:collapse}
-@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-.spin{animation:spin .7s linear infinite;display:inline-block;}
-</style>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BAO Field Tracking</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            background: #09090B;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #FAFAFA;
+        }
+        input,
+        select {
+            outline: none;
+        }
+        input:focus,
+        select:focus {
+            border-color: #F97316 !important;
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #18181B;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #3f3f46;
+            border-radius: 3px;
+        }
+        table {
+            border-collapse: collapse;
+        }
+        @keyframes spin {
+            from {
+                transform: rotate(0deg);
+            }
+            to {
+                transform: rotate(360deg);
+            }
+        }
+        .spin {
+            animation: spin .7s linear infinite;
+            display: inline-block;
+        }
+    </style>
 </head>
 <body>
-<div id="root"></div>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script>
-const{createElement:h,useState,useEffect,useRef}=React;
-const{createClient}=supabase;
-const SURL="https://pxhxohybdippppzagcxu.supabase.co";
-const SKEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4aHhvaHliZGlwcHBwemFnY3h1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4OTIxMDcsImV4cCI6MjA5MTQ2ODEwN30.E1ag_mzm8ngeGO7vDeDYUPJChrsGJAsIhrfEW2D3cEs";
-const sb=createClient(SURL,SKEY);
-const O="#F97316",BG="#09090B",CARD="#18181B",BORDER="#27272A",MUTED="#71717A",TEXT="#FAFAFA",SUB="#A1A1AA";
-const WPS_PREFIX="bao_wps_";
-function loadWpsBuffer(logId){try{return JSON.parse(localStorage.getItem(WPS_PREFIX+logId)||"[]");}catch{return[];}}
-function saveWpsBuffer(logId,wps){try{localStorage.setItem(WPS_PREFIX+logId,JSON.stringify(wps));}catch{}}
-function clearWpsBuffer(logId){localStorage.removeItem(WPS_PREFIX+logId);}
-const ACTIVE_KEY="bao_active_log";
-function saveActiveLog(obj){localStorage.setItem(ACTIVE_KEY,JSON.stringify(obj));}
-function loadActiveLog(){try{return JSON.parse(localStorage.getItem(ACTIVE_KEY)||"null");}catch{return null;}}
-function clearActiveLog(){localStorage.removeItem(ACTIVE_KEY);}
-async function hashPin(p){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(p));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
-function sameDay(a,b){const da=new Date(a),db=new Date(b);return da.getFullYear()===db.getFullYear()&&da.getMonth()===db.getMonth()&&da.getDate()===db.getDate();}
-function fmtT(ts){return ts?new Date(ts).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",hour12:true}):"—";}
-function fmtD(ts){return ts?new Date(ts).toLocaleDateString("en-US",{month:"short",day:"2-digit",year:"numeric"}):"—";}
-function fmtDur(a,b){if(!a||!b)return"—";const ms=new Date(b)-new Date(a),hh=Math.floor(ms/3600000),mm=Math.floor((ms%3600000)/60000);return hh+"h "+mm+"m";}
-function toLocalDT(ts){if(!ts)return"";const d=new Date(ts);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,16);}
-function haversineKm(lat1,lon1,lat2,lon2){
-const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;
-const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
-return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));}
-function calcKm(wps){let t=0;for(let i=1;i<wps.length;i++)t+=haversineKm(wps[i-1].lat,wps[i-1].lon,wps[i].lat,wps[i].lon);return Math.round(t*100)/100;}
-const OSRM_BASE="https://router.project-osrm.org/match/v1/driving/";
-const OSRM_CACHE={};
-async function osrmMatchChunk(wps){
-const coords=wps.map(w=>w.lon.toFixed(6)+","+w.lat.toFixed(6)).join(";");
-const radiuses=wps.map(()=>"50").join(";");
-const url=OSRM_BASE+coords+"?overview=full&geometries=geojson&radiuses="+radiuses+"&gaps=split&tidy=true";
-const res=await fetch(url,{signal: AbortSignal.timeout(12000)});
-if(!res.ok)throw new Error("OSRM HTTP "+res.status);
-const json=await res.json();
-if(json.code!=="Ok")throw new Error("OSRM code: "+json.code);
-const pts=[];
-for(const matching of json.matchings){
-const coords=matching.geometry.coordinates;
-for(const c of coords)pts.push([c[1],c[0]]);
-}
-return pts;}
-async function osrmMatchRoute(wps){
-if(!wps||wps.length<2)return{pts:wps.map(w=>[w.lat,w.lon]),snapped:false};
-const CHUNK=100;const chunks=[];
-for(let i=0;i<wps.length;i+=CHUNK-1){chunks.push(wps.slice(i,i+CHUNK));if(i+CHUNK>=wps.length)break;}
-try{const allPts=[];
-for(let i=0;i<chunks.length;i++){const pts=await osrmMatchChunk(chunks[i]);allPts.push(...(i===0?pts:pts.slice(1)));}
-if(allPts.length<2)throw new Error("empty result");
-return{pts:allPts,snapped:true};}catch(e){console.warn("OSRM match failed, using raw GPS:",e.message);return{pts:wps.map(w=>[w.lat,w.lon]),snapped:false};}}
-async function compressImg(file){return new Promise(res=>{const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{URL.revokeObjectURL(url);const MAX=800,scale=img.width>MAX?MAX/img.width:1,w=Math.round(img.width*scale),hh=Math.round(img.height*scale),c=document.createElement("canvas");c.width=w;c.height=hh;c.getContext("2d").drawImage(img,0,0,w,hh);c.toBlob(blob=>res(new File([blob],file.name,{type:"image/jpeg"})),"image/jpeg",0.7);};img.onerror=()=>res(file);img.src=url;});}
-async function uploadSelfie(file){const comp=await compressImg(file);const name="selfies/"+Date.now()+"-"+Math.random().toString(36).slice(2)+".jpg";const{error}=await sb.storage.from("selfies").upload(name,comp,{contentType:"image/jpeg"});if(error)throw new Error(error.message);return sb.storage.from("selfies").getPublicUrl(name).data.publicUrl;}
-function SyncBtn({onSync}){const[syncing,setSyncing]=useState(false);const go=async()=>{if(syncing)return;setSyncing(true);try{await onSync();}finally{setSyncing(false);}};return h("button",{onClick:go,title:"Sync all data",style:{background:"#27272A",border:"1px solid "+BORDER,color:syncing?O:SUB,borderRadius:8,padding:"5px 10px",fontSize:16,cursor:syncing?"not-allowed":"pointer",display:"flex",alignItems:"center",justifyContent:"center",transition:"color .2s",lineHeight:1}},h("span",{className:syncing?"spin":""},"⟳"));}
-function Btn({children,onClick,bg,style,disabled}){bg=bg||O;return h("button",{onClick,disabled,style:Object.assign({background:disabled?"#3f3f46":bg,color:disabled?MUTED:"#fff",border:"none",borderRadius:10,padding:"10px 18px",fontSize:14,fontWeight:700,cursor:disabled?"not-allowed":"pointer"},style||{})},children);}
-function Card({children,style}){return h("div",{style:Object.assign({background:CARD,border:"1px solid "+BORDER,borderRadius:14,padding:20},style||{})},children);}
-function SelfieModal({isOpen,title,onCapture,onCancel}){const vRef=useRef(),cRef=useRef(),stRef=useRef();const[pre,setPre]=useState(null),[file,setFile]=useState(null),[up,setUp]=useState(false),[err,setErr]=useState(null),[rdy,setRdy]=useState(false);useEffect(()=>{if(!isOpen)return;setPre(null);setFile(null);setErr(null);setRdy(false);navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false}).then(st=>{stRef.current=st;if(vRef.current){vRef.current.srcObject=st;setRdy(true);}}).catch(e=>setErr("Camera denied: "+e.message));return()=>{if(stRef.current){stRef.current.getTracks().forEach(t=>t.stop());stRef.current=null;}};},[isOpen]);const snap=()=>{const v=vRef.current,c=cRef.current;if(!v||!c)return;c.width=v.videoWidth;c.height=v.videoHeight;const ctx=c.getContext("2d");ctx.translate(c.width,0);ctx.scale(-1,1);ctx.drawImage(v,0,0);c.toBlob(b=>{const f=new File([b],"s.jpg",{type:"image/jpeg"});setFile(f);setPre(URL.createObjectURL(b));if(stRef.current){stRef.current.getTracks().forEach(t=>t.stop());stRef.current=null;}},"image/jpeg",.9);};const retake=()=>{setPre(null);setFile(null);setErr(null);setRdy(false);navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false}).then(st=>{stRef.current=st;if(vRef.current){vRef.current.srcObject=st;setRdy(true);}}).catch(e=>setErr(e.message));};const confirm=async()=>{if(!file)return;setUp(true);setErr(null);try{const url=await uploadSelfie(file);onCapture(url);}catch(e){setErr("Upload failed — try again.");}finally{setUp(false);}};if(!isOpen)return null;return h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}},h("div",{style:{background:CARD,border:"1px solid "+BORDER,borderRadius:16,width:"100%",maxWidth:360,padding:20}},h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}},h("span",{style:{color:TEXT,fontWeight:700,fontSize:16}},title),h("button",{onClick:onCancel,style:{background:"none",border:"none",color:MUTED,fontSize:24,cursor:"pointer",lineHeight:1}},"×")),h("div",{style:{background:"#000",borderRadius:12,overflow:"hidden",minHeight:260,position:"relative"}},!pre&&h("video",{ref:vRef,autoPlay:true,playsInline:true,muted:true,style:{width:"100%",transform:"scaleX(-1)",display:"block",minHeight:260,objectFit:"cover"}}),!pre&&!rdy&&!err&&h("div",{style:{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",color:SUB,fontSize:13}},"Starting camera..."),pre&&h("img",{src:pre,style:{width:"100%",display:"block"}}),err&&h("div",{style:{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"#00000099",color:"#f87171",padding:16,textAlign:"center",fontSize:13}},err)),h("canvas",{ref:cRef,style:{display:"none"}}),err&&pre&&h("div",{style:{color:"#f87171",fontSize:13,marginTop:8,textAlign:"center"}},err),h("div",{style:{display:"flex",gap:10,marginTop:14}},h(Btn,{onClick:onCancel,bg:"#27272A",style:{flex:1}},"Cancel"),!pre?h(Btn,{onClick:snap,disabled:!rdy,style:{flex:1}},"📷 Take Selfie"):h("div",{style:{display:"flex",gap:8,flex:1}},h(Btn,{onClick:retake,bg:"#27272A",style:{flex:1}},"↺ Retake"),h(Btn,{onClick:confirm,disabled:up,style:{flex:1}},up?"Uploading...":"✓ Use Photo"))))));}
-function EditLogModal({isOpen,log,onSave,onCancel}){const[timeIn,setTimeIn]=useState(""),[timeOut,setTimeOut]=useState(""),[saving,setSaving]=useState(false);useEffect(()=>{if(!isOpen||!log)return;setTimeIn(toLocalDT(log.time_in));setTimeOut(toLocalDT(log.time_out));},[isOpen,log]);const save=async()=>{if(!timeIn)return;setSaving(true);await onSave({time_in:new Date(timeIn).toISOString(),time_out:timeOut?new Date(timeOut).toISOString():null});setSaving(false);};if(!isOpen||!log)return null;const inp={width:"100%",background:BG,border:"1px solid "+BORDER,borderRadius:8,padding:"9px 11px",color:TEXT,fontSize:13,boxSizing:"border-box",colorScheme:"dark"};const lbl={color:SUB,fontSize:12,display:"block",marginBottom:5};return h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}},h("div",{style:{background:CARD,border:"1px solid "+BORDER,borderRadius:16,width:"100%",maxWidth:400,padding:24}},h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}},h("span",{style:{color:TEXT,fontWeight:700,fontSize:16}},"✏ Edit Log"),h("button",{onClick:onCancel,style:{background:"none",border:"none",color:MUTED,fontSize:24,cursor:"pointer",lineHeight:1}},"×")),h("div",{style:{background:"#27272A",borderRadius:8,padding:"8px 12px",marginBottom:16,fontSize:12,color:SUB}},h("span",{style:{color:TEXT,fontWeight:600}},log.display_name),h("span",null," · "),h("span",null,fmtD(log.time_in))),h("div",{style:{marginBottom:14}},h("label",{style:lbl},"Time In"),h("input",{type:"datetime-local",value:timeIn,onChange:e=>setTimeIn(e.target.value),style:inp})),h("div",{style:{marginBottom:14}},h("label",{style:lbl},"Time Out"),h("input",{type:"datetime-local",value:timeOut,onChange:e=>setTimeOut(e.target.value),style:inp})),h("div",{style:{display:"flex",gap:10}},h(Btn,{onClick:onCancel,bg:"#27272A",style:{flex:1}},"Cancel"),h(Btn,{onClick:save,disabled:saving,style:{flex:1}},saving?"Saving...":"✓ Save")))));}
-// ── Add Log Modal (manual time in/out on behalf of agent) ────────────────────
-function AddLogModal({isOpen,users,onSave,onCancel}){
-const[userId,setUserId]=useState(""),[tIn,setTIn]=useState(""),[tOut,setTOut]=useState(""),[saving,setSaving]=useState(false),[err,setErr]=useState(null);
-useEffect(()=>{if(!isOpen)return;setUserId("");setTIn("");setTOut("");setSaving(false);setErr(null);},[isOpen]);
-const save=async()=>{
-if(!userId){setErr("Select an agent.");return;}
-if(!tIn){setErr("Time In is required.");return;}
-if(tOut&&new Date(tOut)<=new Date(tIn)){setErr("Time Out must be after Time In.");return;}
-setSaving(true);setErr(null);
-const u=users.find(x=>x.id===userId);
-const ok=await onSave({user_id:userId,display_name:u?u.display_name:userId,time_in:new Date(tIn).toISOString(),time_out:tOut?new Date(tOut).toISOString():null});
-setSaving(false);
-if(ok)onCancel();};
-if(!isOpen)return null;
-const inp={width:"100%",background:BG,border:"1px solid "+BORDER,borderRadius:8,padding:"9px 11px",color:TEXT,fontSize:13,boxSizing:"border-box",colorScheme:"dark"};
-const lbl={color:SUB,fontSize:12,display:"block",marginBottom:5};
-return h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}},
-h("div",{style:{background:CARD,border:"1px solid "+BORDER,borderRadius:16,width:"100%",maxWidth:400,padding:24}},
-h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}},
-h("span",{style:{color:TEXT,fontWeight:700,fontSize:16}}," Add Log (on behalf of agent)"),
-h("button",{onClick:onCancel,style:{background:"none",border:"none",color:MUTED,fontSize:24,cursor:"pointer",lineHeight:1}},"×")),
-h("div",{style:{marginBottom:14}},h("label",{style:lbl},"Agent"),
-h("select",{value:userId,onChange:e=>setUserId(e.target.value),style:inp},
-h("option",{value:""},"— Select agent —"),
-...users.map(u=>h("option",{key:u.id,value:u.id},u.display_name)))),
-h("div",{style:{marginBottom:14}},h("label",{style:lbl},"Time In *"),h("input",{type:"datetime-local",value:tIn,onChange:e=>setTIn(e.target.value),style:inp})),
-h("div",{style:{marginBottom:14}},h("label",{style:lbl},"Time Out (leave blank if still working)"),h("input",{type:"datetime-local",value:tOut,onChange:e=>setTOut(e.target.value),style:inp})),
-err&&h("div",{style:{color:"#f87171",fontSize:13,marginBottom:10,textAlign:"center"}},err),
-h("div",{style:{display:"flex",gap:10}},
-h(Btn,{onClick:onCancel,bg:"#27272A",style:{flex:1}},"Cancel"),
-h(Btn,{onClick:save,disabled:saving,style:{flex:1}},saving?"Saving...":"✓ Save Log")))));}
-function pageList(total,cur){
-if(total<=7)return Array.from({length:total},(_,i)=>i+1);
-const want=[1,total,cur-1,cur,cur+1];
-if(cur<=3)want.push(2,3,4);
-if(cur>=total-2)want.push(total-1,total-2,total-3);
-const arr=[...new Set(want)].filter(p=>p>=1&&p<=total).sort((a,b)=>a-b);
-const out=[];let prev=0;
-for(const p of arr){if(p-prev>1)out.push("…");out.push(p);prev=p;}
-return out;}
-// ── Admin Dashboard ───────────────────────────────────────────────────────────
-function AdminDash({user,onLogout}){
-const[tab,setTab]=useState("logs"),[logs,setLogs]=useState([]),[users,setUsers]=useState([]),[homes,setHomes]=useState([]),[routeLogs,setRouteLogs]=useState([]);
-const[fUser,setFUser]=useState(""),[fFrom,setFFrom]=useState(""),[fTo,setFTo]=useState("");
-const[toast,setToast]=useState(null),[nu,setNu]=useState({id:"",display_name:"",pin:"",role:"agent"}),[adding,setAdding]=useState(false);
-const[editLog,setEditLog]=useState(null);
-const[page,setPage]=useState(1);
-const[addOpen,setAddOpen]=useState(false);
-const[mfUser,setMfUser]=useState(""),[mfFrom,setMfFrom]=useState(""),[mfTo,setMfTo]=useState(""),[mfType,setMfType]=useState("all");
-const[mapReady,setMapReady]=useState(false);
-const mapRef=useRef(),mapObj=useRef(),markersLayerRef=useRef();
-const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3000);};
-useEffect(()=>{loadAll();},[]);
-useEffect(()=>{setPage(1);},[fUser,fFrom,fTo]);
-const loadAll=async()=>{
-const[{data:l},{data:u},{data:hh},{data:r}]=await Promise.all([
-sb.from("time_logs").select("*").order("time_in",{ascending:false}),
-sb.from("users").select("*").order("display_name"),
-sb.from("home_locations").select("*"),
-sb.from("route_logs").select("*").order("date",{ascending:false})
-]);
-setLogs(l||[]);setUsers(u||[]);setHomes(hh||[]);setRouteLogs(r||[]);};
-const handleSync=async()=>{await loadAll();toast2("Data synced ✓");};
-useEffect(()=>{
-if(tab!=="map")return;
-setTimeout(()=>{
-if(!mapRef.current||mapObj.current)return;
-const L=window.L,map=L.map(mapRef.current).setView([12.88,121.77],6);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
-mapObj.current=map;
-const layer=L.layerGroup().addTo(map);
-markersLayerRef.current=layer;
-setMapReady(true);},300);},[tab]);
-useEffect(()=>{
-if(!mapReady||!mapObj.current||!markersLayerRef.current)return;
-const L=window.L,layer=markersLayerRef.current,map=mapObj.current;
-layer.clearLayers();
-const pin=(lat,lon,color,popup)=>{const ic=L.divIcon({html:'<div style="width:13px;height:13px;background:'+color+';border:2px solid #fff;border-radius:50%"></div>',className:"",iconAnchor:[6,6]});L.marker([lat,lon],{icon:ic}).bindPopup(popup).addTo(layer);};
-const filteredLogs=logs.filter(l=>{
-if(mfUser&&l.user_id!==mfUser)return false;
-if(mfFrom&&new Date(l.time_in)<new Date(mfFrom))return false;
-if(mfTo&&new Date(l.time_in)>new Date(mfTo+"T23:59:59"))return false;
-return true;});
-const filteredHomes=homes.filter(hh=>!mfUser||hh.user_id===mfUser);
-if(mfType==="all"||mfType==="home"){filteredHomes.forEach(hh=>{const u=users.find(x=>x.id===hh.user_id);pin(hh.lat,hh.lon,"#3b82f6","<b>🏠 Home</b><br/>"+(u?.display_name||hh.user_id));});}
-if(mfType==="all"||mfType==="timein"){filteredLogs.forEach(l=>{if(l.lat&&l.lon)pin(l.lat,l.lon,"#22c55e",'<div style="text-align:center"><b>🟢 Time In</b><br/>'+l.display_name+'<br/><small>'+fmtD(l.time_in)+" "+fmtT(l.time_in)+'</small>'+(l.blob_id?'<br/><img src="'+l.blob_id+'" style="width:70px;height:70px;object-fit:cover;border-radius:5px;margin-top:4px"/>':"")+'</div>');});}
-if(mfType==="all"||mfType==="timeout"){filteredLogs.forEach(l=>{if(l.timeout_lat&&l.timeout_lon)pin(l.timeout_lat,l.timeout_lon,"#ef4444",'<div style="text-align:center"><b>🔴 Time Out</b><br/>'+l.display_name+'<br/><small>'+fmtD(l.time_out)+" "+fmtT(l.time_out)+'</small>'+(l.timeout_blob_id?'<br/><img src="'+l.timeout_blob_id+'" style="width:70px;height:70px;object-fit:cover;border-radius:5px;margin-top:4px"/>':"")+'</div>');});}
-const pts=[];
-if(mfType==="all"||mfType==="home")filteredHomes.forEach(hh=>pts.push([hh.lat,hh.lon]));
-if(mfType==="all"||mfType==="timein")filteredLogs.filter(l=>l.lat).forEach(l=>pts.push([l.lat,l.lon]));
-if(mfType==="all"||mfType==="timeout")filteredLogs.filter(l=>l.timeout_lat).forEach(l=>pts.push([l.timeout_lat,l.timeout_lon]));
-if(pts.length>1)map.fitBounds(pts,{padding:[30,30]});},[mapReady,mfUser,mfFrom,mfTo,mfType,logs,homes,users]);
-const filtered=logs.filter(l=>{
-if(fUser&&l.user_id!==fUser)return false;
-if(fFrom&&new Date(l.time_in)<new Date(fFrom))return false;
-if(fTo&&new Date(l.time_in)>new Date(fTo+"T23:59:59"))return false;
-return true;});
-const PAGE_SIZE=100;
-const totalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
-const safePage=Math.min(page,totalPages);
-const pageRows=filtered.slice((safePage-1)*PAGE_SIZE,safePage*PAGE_SIZE);
-const pgBtn=(dis,active)=>({background:active?O:"#27272A",color:active?"#fff":SUB,border:"none",borderRadius:6,padding:"5px 10px",fontSize:12,fontWeight:700,cursor:dis?"not-allowed":"pointer",opacity:dis?0.45:1,minWidth:32});
-const csv=()=>{
-const rows=[["Name","Date","Time In","Time Out","Duration","Lat","Lon"],...filtered.map(l=>[l.display_name,fmtD(l.time_in),fmtT(l.time_in),fmtT(l.time_out),fmtDur(l.time_in,l.time_out),l.lat,l.lon])];
-const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));a.download="bao-logs.csv";a.click();};
-const delLog=async id=>{
-if(!confirm("Delete this log entry? This cannot be undone."))return;
-const{error}=await sb.from("time_logs").delete().eq("id",id);
-if(error){toast2(error.message,false);return;}
-toast2("Log deleted.");loadAll();};
-const saveEditLog=async updates=>{
-const{error}=await sb.from("time_logs").update({time_in:updates.time_in,time_out:updates.time_out}).eq("id",editLog.id);
-if(error){toast2(error.message,false);return;}
-setEditLog(null);toast2("Log updated! ✓");loadAll();};
-const addLog=async payload=>{
-const{error}=await sb.from("time_logs").insert({id:payload.user_id+"-"+Date.now(),user_id:payload.user_id,display_name:payload.display_name,time_in:payload.time_in,time_out:payload.time_out});
-if(error){toast2(error.message,false);return false;}
-toast2("Log added! ✓");loadAll();return true;};
-const promote=async id=>{await sb.from("users").update({role:"admin"}).eq("id",id);toast2("Promoted!");loadAll();};
-const demote=async id=>{if(id==="admin"){toast2("Cannot demote main admin.",false);return;}await sb.from("users").update({role:"agent"}).eq("id",id);toast2("Demoted.");loadAll();};
-const del=async id=>{if(id==="admin"){toast2("Cannot delete main admin.",false);return;}if(!confirm('Delete "'+id+'"?'))return;await sb.from("users").delete().eq("id",id);toast2("Deleted.");loadAll();};
-const add=async()=>{
-if(!nu.id||!nu.display_name||!nu.pin){toast2("Fill all fields.",false);return;}
-setAdding(true);const h2=await hashPin(nu.pin);
-const{error}=await sb.from("users").insert({id:nu.id.toLowerCase().trim(),display_name:nu.display_name,role:nu.role,pin_hash:h2});
-if(error){toast2(error.message,false);}else{toast2("User added!");setNu({id:"",display_name:"",pin:"",role:"agent"});loadAll();}
-setAdding(false);};
-const ts=t=>({padding:"7px 14px",borderRadius:8,border:"none",cursor:"pointer",fontWeight:700,fontSize:13,background:tab===t?O:"transparent",color:tab===t?"#fff":SUB});
-const mts=t=>({padding:"5px 12px",borderRadius:7,border:"none",cursor:"pointer",fontWeight:700,fontSize:12,background:mfType===t?O:"transparent",color:mfType===t?"#fff":SUB});
-const inp={background:BG,border:"1px solid "+BORDER,borderRadius:8,color:TEXT,padding:"7px 10px",fontSize:13};
-return h("div",{style:{minHeight:"100vh",background:BG,paddingBottom:40}},
-h("header",{style:{background:CARD,borderBottom:"1px solid "+BORDER,padding:"0 16px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between"}},
-h("div",{style:{display:"flex",alignItems:"center",gap:8}},
-h("div",{style:{width:30,height:30,background:O,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,color:"#fff",fontSize:13}},"B"),
-h("span",{style:{color:TEXT,fontWeight:700,fontSize:14}},"BAO Admin")),
-h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
-h(SyncBtn,{onSync:handleSync}),
-h(Btn,{onClick:onLogout,bg:"#27272A",style:{padding:"5px 12px",fontSize:12}},"Logout"))),
-h("div",{style:{maxWidth:900,margin:"0 auto",padding:"18px 14px"}},
-toast&&h("div",{style:{background:toast.ok?"#16a34a33":"#dc262633",border:"1px solid "+(toast.ok?"#16a34a":"#dc2626"),borderRadius:10,padding:"10px 16px",color:toast.ok?"#4ade80":"#f87171",textAlign:"center",fontWeight:600,marginBottom:14}},toast.msg),
-h("div",{style:{display:"flex",gap:4,marginBottom:18,background:CARD,border:"1px solid "+BORDER,borderRadius:10,padding:5,width:"fit-content"}},
-h("button",{style:ts("map"),onClick:()=>setTab("map")},"🗺 Map"),
-h("button",{style:ts("logs"),onClick:()=>setTab("logs")},"📋 Logs"),
-h("button",{style:ts("route"),onClick:()=>setTab("route")},"📍 Route"),
-h("button",{style:ts("users"),onClick:()=>setTab("users")},"👥 Users")),
-tab==="map"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
-h(Card,null,
-h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
-h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Agent"),h("select",{value:mfUser,onChange:e=>setMfUser(e.target.value),style:inp},h("option",{value:""},"All agents"),...users.map(u=>h("option",{key:u.id,value:u.id},u.display_name)))),
-h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"From"),h("input",{type:"date",value:mfFrom,onChange:e=>setMfFrom(e.target.value),style:inp})),
-h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"To"),h("input",{type:"date",value:mfTo,onChange:e=>setMfTo(e.target.value),style:inp})),
-h("div",null,
-h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Pin Type"),
-h("div",{style:{display:"flex",gap:3,background:"#09090B",border:"1px solid "+BORDER,borderRadius:8,padding:3}},
-h("button",{style:mts("all"),onClick:()=>setMfType("all")},"All"),
-h("button",{style:mts("timein"),onClick:()=>setMfType("timein")},"🟢 In"),
-h("button",{style:mts("timeout"),onClick:()=>setMfType("timeout")},"🔴 Out"),
-h("button",{style:mts("home"),onClick:()=>setMfType("home")},"🔵 Home"))),
-(mfUser||mfFrom||mfTo||mfType!=="all")&&h(Btn,{onClick:()=>{setMfUser("");setMfFrom("");setMfTo("");setMfType("all");},bg:"#27272A",style:{padding:"7px 12px",fontSize:12,alignSelf:"flex-end"}},"✕ Clear"))),
-h(Card,{style:{padding:0,overflow:"hidden"}},
-h("div",{ref:mapRef,style:{width:"100%",height:460}}),
-h("div",{style:{padding:"8px 14px",display:"flex",gap:14,fontSize:12,color:SUB}},
-h("span",null,"🔵 Home"),h("span",null,"🟢 Time In"),h("span",null,"🔴 Time Out"),
-h("span",{style:{marginLeft:"auto"}},"Click pins for details & photos")))),
-tab==="logs"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
-h(Card,null,
-h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
-h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Agent"),h("select",{value:fUser,onChange:e=>setFUser(e.target.value),style:inp},h("option",{value:""},"All agents"),...users.map(u=>h("option",{key:u.id,value:u.id},u.display_name)))),
-h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"From"),h("input",{type:"date",value:fFrom,onChange:e=>setFFrom(e.target.value),style:inp})),
-h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"To"),h("input",{type:"date",value:fTo,onChange:e=>setFTo(e.target.value),style:inp})),
-h(Btn,{onClick:csv,bg:"#27272A",style:{padding:"7px 12px",fontSize:13}},"⬇ CSV"),
-h(Btn,{onClick:()=>setAddOpen(true),bg:"#16a34a",style:{padding:"7px 12px",fontSize:13}}," Add Log"),
-h("span",{style:{color:MUTED,fontSize:12,alignSelf:"center"}},filtered.length===0?"0 records":"Showing "+((safePage-1)*PAGE_SIZE+1)+"–"+Math.min(safePage*PAGE_SIZE,filtered.length)+" of "+filtered.length))),
-h(Card,{style:{padding:0,overflowX:"auto"}},
-h("table",{style:{width:"100%",fontSize:12}},
-h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},["Photo","Agent","Date","In","Out","Duration","GPS","Actions"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 12px",textAlign:"left",whiteSpace:"nowrap"}},x)))),
-h("tbody",null,filtered.length===0
-?h("tr",null,h("td",{colSpan:8,style:{color:MUTED,textAlign:"center",padding:20}},"No logs found"))
-:pageRows.map((l,i)=>h("tr",{key:l.id,style:{borderBottom:i<pageRows.length-1?"1px solid "+BORDER:"none",background:i%2?"#ffffff04":"transparent"}},
-h("td",{style:{padding:"8px 12px"}},l.blob_id&&h("img",{src:l.blob_id,style:{width:36,height:36,borderRadius:6,objectFit:"cover"},onError:e=>e.target.style.display="none"})),
-h("td",{style:{padding:"8px 12px",color:TEXT,fontWeight:600}},l.display_name),
-h("td",{style:{padding:"8px 12px",color:SUB}},fmtD(l.time_in)),
-h("td",{style:{padding:"8px 12px",color:"#4ade80"}},fmtT(l.time_in)),
-h("td",{style:{padding:"8px 12px",color:l.time_out?"#f87171":MUTED}},fmtT(l.time_out)),
-h("td",{style:{padding:"8px 12px",color:O}},fmtDur(l.time_in,l.time_out)),
-h("td",{style:{padding:"8px 12px",color:MUTED,fontSize:11}},(l.lat!=null&&l.lon!=null?l.lat.toFixed(3)+","+l.lon.toFixed(3):"—")),
-h("td",{style:{padding:"8px 12px"}},
-h("div",{style:{display:"flex",gap:5}},
-h("button",{onClick:()=>setEditLog(l),style:{background:"#27272A",color:"#fff",border:"none",borderRadius:6,padding:"3px 8px",fontSize:11,cursor:"pointer",fontWeight:600}},"✏ Edit"),
-h("button",{onClick:()=>delLog(l.id),style:{background:"#dc2626",color:"#fff",border:"none",borderRadius:6,padding:"3px 8px",fontSize:11,cursor:"pointer",fontWeight:600}},"🗑 Del"))))))))),
-totalPages>1&&h(Card,{style:{padding:"10px 14px"}},
-h("div",{style:{display:"flex",gap:6,alignItems:"center",justifyContent:"center",flexWrap:"wrap"}},
-h("button",{onClick:()=>setPage(Math.max(1,safePage-1)),disabled:safePage===1,style:pgBtn(safePage===1,false)},"« Prev"),
-...pageList(totalPages,safePage).map((p,i)=>p==="…"
-?h("span",{key:"e"+i,style:{color:MUTED,padding:"0 4px"}},"…")
-:h("button",{key:"p"+p,onClick:()=>setPage(p),style:pgBtn(false,p===safePage)},String(p))),
-h("button",{onClick:()=>setPage(Math.min(totalPages,safePage+1)),disabled:safePage===totalPages,style:pgBtn(safePage===totalPages,false)},"Next »"))),
-tab==="users"&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
-h(Card,null,
-h("div",{style:{color:TEXT,fontWeight:700,fontSize:14,marginBottom:12}},"Add New User"),
-h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
-...[["Username","id","juan.reyes"],["Full Name","display_name","Juan Reyes"],["PIN","pin",""]].map(([label,key,ph])=>
-h("div",{key:key},h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},label),h("input",{type:key==="pin"?"password":"text",placeholder:ph,value:nu[key],onChange:e=>setNu(p=>Object.assign({},p,{[key]:e.target.value})),style:Object.assign({},inp,{width:150})}))),
-h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Role"),h("select",{value:nu.role,onChange:e=>setNu(p=>Object.assign({},p,{role:e.target.value})),style:inp},h("option",{value:"agent"},"Agent"),h("option",{value:"admin"},"Admin"))),
-h(Btn,{onClick:add,disabled:adding,style:{padding:"7px 14px",fontSize:13}},adding?"Adding...":"Add User"))),
-h(Card,{style:{padding:0,overflowX:"auto"}},
-h("table",{style:{width:"100%",fontSize:13}},
-h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},["Username","Name","Role","Actions"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 14px",textAlign:"left"}},x)))),
-h("tbody",null,users.map((u,i)=>h("tr",{key:u.id,style:{borderBottom:i<users.length-1?"1px solid "+BORDER:"none"}},
-h("td",{style:{padding:"9px 14px",color:MUTED,fontFamily:"monospace",fontSize:11}},u.id),
-h("td",{style:{padding:"9px 14px",color:TEXT,fontWeight:600}},u.display_name),
-h("td",{style:{padding:"9px 14px"}},h("span",{style:{background:u.role==="admin"?"#16a34a22":"#27272A",color:u.role==="admin"?"#4ade80":SUB,border:"1px solid "+(u.role==="admin"?"#16a34a44":BORDER),borderRadius:20,padding:"2px 10px",fontSize:12,fontWeight:600}},u.role==="admin"?"Admin":"Agent")),
-h("td",{style:{padding:"9px 14px"}},h("div",{style:{display:"flex",gap:6}},
-u.role!=="admin"&&h(Btn,{onClick:()=>promote(u.id),bg:"#16a34a",style:{padding:"4px 10px",fontSize:12}},"Promote"),
-u.role==="admin"&&u.id!=="admin"&&h(Btn,{onClick:()=>demote(u.id),bg:"#ca8a04",style:{padding:"4px 10px",fontSize:12}},"Demote"),
-u.id!=="admin"&&h(Btn,{onClick:()=>del(u.id),bg:"#dc2626",style:{padding:"4px 10px",fontSize:12}},"Delete"))))))))),
-h(EditLogModal,{isOpen:!!editLog,log:editLog,onSave:saveEditLog,onCancel:()=>setEditLog(null)}),
-h(EditLogModal,{isOpen:!!editLog,log:editLog,onSave:saveEditLog,onCancel:()=>setEditLog(null)}),
-h(AddLogModal,{isOpen:addOpen,users:users,onSave:addLog,onCancel:()=>setAddOpen(false)}),
-tab==="route"&&h(RouteTab,{routeLogs,users}));}
-// ── Route Tab ────────────────────────────────────────────────────────────────
-function RouteTab({routeLogs,users}){
-const[rUser,setRUser]=useState(""),[rDate,setRDate]=useState(""),[period,setPeriod]=useState("daily");
-const rMapRef=useRef(),[snapping,setSnapping]=useState(false),[snapStats,setSnapStats]=useState({});
-const agentColorMap={};
-users.forEach((u,i)=>{agentColorMap[u.id]=["#F97316","#3b82f6","#22c55e","#a855f7","#ec4899","#eab308","#14b8a6","#f43f5e"][i%8];});
-const periodLabel=period==="daily"?"Today":period==="weekly"?"This Week":"This Month";
-const now=new Date();
-const filtered=routeLogs.filter(r=>{
-if(rUser&&r.user_id!==rUser)return false;
-const rd=new Date(r.date);
-if(period==="daily"){if(rDate&&fmtD(rd)!==fmtD(new Date(rDate)))return false;}
-else if(period==="weekly"){const weekAgo=new Date(now);weekAgo.setDate(now.getDate()-7);if(rd<weekAgo)return false;}
-else{if(rd.getMonth()!==now.getMonth()||rd.getFullYear()!==now.getFullYear())return false;}
-return true;});
-const summary=[];let grandKm=0;
-users.forEach(u=>{const userRoutes=filtered.filter(r=>r.user_id===u.id);let km=0;const days=new Set();userRoutes.forEach(r=>{km+=(r.total_km||0);days.add(fmtD(r.date));});if(km>0||userRoutes.length>0){summary.push({id:u.id,display_name:u.display_name,km,days:days.size});grandKm+=km;}});
-useEffect(()=>{
-if(!rMapRef.current)return;
-setSnapping(true);setSnapStats({});
-const L=window.L;
-if(!mapObj.current){
-const map=L.map(rMapRef.current).setView([12.88,121.77],6);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
-mapObj.current=map;}
-const map=mapObj.current;map.eachLayer(l=>{if(l instanceof L.Polyline||l instanceof L.Marker)map.removeLayer(l);});
-const allBounds=[];const newSnapStats={};
-setTimeout(async()=>{
-for(const r of filtered){
-const agentName=r.display_name||r.user_id;
-const color=agentColorMap[r.user_id]||O;
-const wps=r.waypoints||[];
-if(wps.length<2)continue;
-const result=await osrmMatchRoute(wps);
-const{pts,snapped}=result;
-newSnapStats[r.id]=snapped?"snapped":"raw";
-L.polyline(pts,{color:"#000000",weight:8,opacity:0.25}).addTo(map);
-const line=L.polyline(pts,{color,weight:5,opacity:0.95}).addTo(map);
-const snapBadge=snapped?"<span style='color:#4ade80;font-size:10px'>✓ road-snapped</span>":"<span style='color:#fbbf24;font-size:10px'>⚠ raw GPS</span>";
-line.bindPopup("<b>"+agentName+"</b><br/>"+r.date+"<br/>"+r.total_km+" km · "+pts.length+" pts<br/>"+snapBadge);
-const mkIcon=(c,sz)=>L.divIcon({html:'<div style="width:'+sz+'px;height:'+sz+'px;background:'+c+';border:2.5px solid #fff;border-radius:50%;box-shadow:0 0 5px rgba(0,0,0,.6)"></div>',className:"",iconAnchor:[sz/2,sz/2]});
-L.marker(pts[0],{icon:mkIcon("#22c55e",14)}).addTo(map).bindPopup("🟢 Start · "+agentName+"<br/>"+r.date);
-L.marker(pts[pts.length-1],{icon:mkIcon("#ef4444",14)}).addTo(map).bindPopup("🔴 End · "+agentName+"<br/>"+r.date);
-allBounds.push(...pts);}
-setSnapStats(newSnapStats);setSnapping(false);
-if(allBounds.length>1)map.fitBounds(allBounds,{padding:[40,40]});},300);},[filtered.length,rUser,rDate,period,routeLogs.length]);
-const inp={background:BG,border:"1px solid "+BORDER,borderRadius:8,color:TEXT,padding:"7px 10px",fontSize:13};
-const pts=t=>({padding:"5px 14px",borderRadius:7,border:"none",cursor:"pointer",fontWeight:700,fontSize:12,background:period===t?O:"transparent",color:period===t?"#fff":SUB});
-const snappedCount=Object.values(snapStats).filter(v=>v==="snapped").length;
-const rawCount=Object.values(snapStats).filter(v=>v==="raw").length;
-const routeCsv=()=>{const rows=[["Agent","Date","Waypoints","Distance","Snapped"],...filtered.map(r=>[r.display_name,r.date,(r.waypoints?.length||0)+" pts",(r.total_km||0).toFixed(2)+" km",snapStats[r.id]==="snapped"?"road-snapped":"raw GPS"])];const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));a.download="bao-routes.csv";a.click();};
-return h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
-h(Card,null,
-h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}},
-h("div",null,
-h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Period"),
-h("div",{style:{display:"flex",background:BG,border:"1px solid "+BORDER,borderRadius:8,overflow:"hidden"}},
-h("button",{style:pts("daily"),onClick:()=>setPeriod("daily")},"Daily"),
-h("button",{style:pts("weekly"),onClick:()=>setPeriod("weekly")},"Weekly"),
-h("button",{style:pts("monthly"),onClick:()=>setPeriod("monthly")},"Monthly"))),
-h("div",null,h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Date"),h("input",{type:"date",value:rDate,onChange:e=>setRDate(e.target.value),style:inp})),
-h("div",null,
-h("div",{style:{color:SUB,fontSize:11,marginBottom:4}},"Agent"),
-h("select",{value:rUser,onChange:e=>setRUser(e.target.value),style:inp},
-h("option",{value:""},"All agents"),
-...users.map(u=>h("option",{key:u.id,value:u.id},u.display_name)))),
-h(Btn,{onClick:routeCsv,bg:"#27272A",style:{padding:"7px 12px",fontSize:13,alignSelf:"flex-end"}},"⬇ CSV"))),
-users.length>0&&h(Card,{style:{padding:"10px 14px"}},
-h("div",{style:{display:"flex",flexWrap:"wrap",gap:12,alignItems:"center",justifyContent:"space-between"}},
-h("div",{style:{display:"flex",flexWrap:"wrap",gap:12,alignItems:"center"}},
-h("span",{style:{color:SUB,fontSize:11,fontWeight:600}},"ROUTE COLORS:"),
-...users.map(u=>h("div",{key:u.id,style:{display:"flex",alignItems:"center",gap:5}},
-h("div",{style:{width:22,height:4,background:agentColorMap[u.id]||O,borderRadius:2}}),
-h("span",{style:{color:TEXT,fontSize:12}},u.display_name)))),
-(snappedCount>0||rawCount>0)&&h("div",{style:{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}},
-snapping&&h("span",{style:{color:SUB,fontSize:11,display:"flex",alignItems:"center",gap:4}},
-h("span",{className:"spin",style:{fontSize:12}},"")," Snapping to roads..."),
-!snapping&&snappedCount>0&&h("span",{style:{background:"#16a34a22",border:"1px solid #16a34a44",borderRadius:20,padding:"2px 9px",color:"#4ade80",fontSize:11,fontWeight:600}},"✓ "+snappedCount+" road-snapped"),
-!snapping&&rawCount>0&&h("span",{style:{background:"#ca8a0422",border:"1px solid #ca8a0444",borderRadius:20,padding:"2px 9px",color:"#fbbf24",fontSize:11,fontWeight:600}},"⚠ "+rawCount+" raw GPS")))),
-summary.length>0&&h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10}},
-...summary.map(u=>h(Card,{key:u.id,style:{padding:"12px 14px",borderLeft:"3px solid "+(agentColorMap[u.id]||O)}},
-h("div",{style:{color:SUB,fontSize:10,textTransform:"uppercase",letterSpacing:1,marginBottom:3}},"Agent"),
-h("div",{style:{color:TEXT,fontWeight:700,fontSize:13,marginBottom:6}},u.display_name),
-h("div",{style:{color:agentColorMap[u.id]||O,fontSize:22,fontWeight:800,lineHeight:1}},u.km.toFixed(2)),
-h("div",{style:{color:MUTED,fontSize:11,marginTop:2}},"km · "+u.days+" day"+(u.days!==1?"s":"")))),
-h(Card,{style:{padding:"12px 14px",border:"1px solid "+O+"44",background:"#F9731608"}},
-h("div",{style:{color:SUB,fontSize:10,textTransform:"uppercase",letterSpacing:1,marginBottom:3}},"Total"),
-h("div",{style:{color:TEXT,fontWeight:700,fontSize:13,marginBottom:6}},periodLabel),
-h("div",{style:{color:O,fontSize:22,fontWeight:800,lineHeight:1}},grandKm.toFixed(2)),
-h("div",{style:{color:MUTED,fontSize:11,marginTop:2}},"km combined"))),
-h(Card,{style:{padding:0,overflow:"hidden"}},
-h("div",{ref:rMapRef,style:{width:"100%",height:480}}),
-h("div",{style:{padding:"8px 14px",display:"flex",gap:14,fontSize:12,color:SUB,flexWrap:"wrap",alignItems:"center"}},
-h("span",null,"🟢 Start"),h("span",null,"🔴 End"),h("span",null,"— Colored by agent"),
-h("span",{style:{color:"#4ade80",fontSize:11}},"✓ Routes follow actual roads via OSRM"),
-h("span",{style:{marginLeft:"auto"}},filtered.length+" route"+(filtered.length!==1?"s":"")+" shown"))),
-h("div",{style:{background:"#3b82f611",border:"1px solid #3b82f633",borderRadius:10,padding:"10px 14px",fontSize:12,color:"#93c5fd"}},
-h("span",{style:{fontWeight:700}},"🗺 Road Snapping: "),
-"Routes are automatically aligned to actual roads using OSRM map matching. If OSRM is unavailable, raw GPS lines are shown with a ⚠ warning. Snapped routes are cached per session — reload to re-fetch."),
-filtered.length>0&&h(Card,{style:{padding:0,overflowX:"auto"}},
-h("table",{style:{width:"100%",fontSize:12}},
-h("thead",null,h("tr",{style:{borderBottom:"1px solid "+BORDER}},
-["","Agent","Date","Waypoints","Distance","Snapped"].map(x=>h("th",{key:x,style:{color:SUB,fontWeight:600,padding:"10px 12px",textAlign:"left",whiteSpace:"nowrap"}},x)))),
-h("tbody",null,...filtered.map((r,i)=>h("tr",{key:r.id,style:{borderBottom:i<filtered.length-1?"1px solid "+BORDER:"none",background:i%2?"#ffffff04":"transparent"}},
-h("td",{style:{padding:"8px 8px 8px 12px"}},h("div",{style:{width:14,height:14,borderRadius:"50%",background:agentColorMap[r.user_id]||O}})),
-h("td",{style:{padding:"8px 12px",color:TEXT,fontWeight:600}},r.display_name),
-h("td",{style:{padding:"8px 12px",color:SUB}},r.date),
-h("td",{style:{padding:"8px 12px",color:MUTED}},(r.waypoints?.length||0)+" pts"),
-h("td",{style:{padding:"8px 12px",color:agentColorMap[r.user_id]||O,fontWeight:700}},(r.total_km||0).toFixed(2)+" km"),
-h("td",{style:{padding:"8px 12px"}},
-snapStats[r.id]==="snapped"?h("span",{style:{color:"#4ade80",fontSize:11,fontWeight:600}},"✓ road"):snapStats[r.id]==="raw"?h("span",{style:{color:"#fbbf24",fontSize:11,fontWeight:600}},"⚠ raw"):h("span",{style:{color:MUTED,fontSize:11}},"—")))))),
-filtered.length===0&&h(Card,{style:{textAlign:"center",padding:"36px 20px"}},
-h("div",{style:{fontSize:30,marginBottom:10}},"📍"),
-h("div",{style:{color:TEXT,fontWeight:600,marginBottom:5}},"No route data yet"),
-h("div",{style:{color:MUTED,fontSize:13}},"Routes are recorded automatically when agents clock in and out.")));}
-// ─ Login ─────────────────────────────────────────────────────────────────────
-function Login({onLogin}){
-const[id,setId]=useState(""),[pin,setPin]=useState(""),[err,setErr]=useState(null),[loading,setLoading]=useState(false);
-const go=async()=>{
-if(!id||!pin){setErr("Enter username and PIN.");return;}
-setLoading(true);setErr(null);
-const{data,error}=await sb.from("users").select("*").eq("id",id.toLowerCase().trim()).maybeSingle();
-if(error||!data){setErr("User not found.");setLoading(false);return;}
-const h=await hashPin(pin);
-if(h!==data.pin_hash){setErr("Wrong PIN.");setLoading(false);return;}
-onLogin(data);};
-const inp={width:"100%",background:BG,border:"1px solid "+BORDER,borderRadius:10,padding:"12px 14px",color:TEXT,fontSize:15,boxSizing:"border-box",colorScheme:"dark"};
-return h("div",{style:{minHeight:"100vh",background:BG,display:"flex",alignItems:"center",justifyContent:"center",padding:16}},
-h("div",{style:{width:"100%",maxWidth:340}},
-h("div",{style:{textAlign:"center",marginBottom:28}},
-h("div",{style:{width:56,height:56,background:O,borderRadius:14,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:26,fontWeight:800,color:"#fff",marginBottom:12}},"B"),
-h("div",{style:{color:TEXT,fontWeight:800,fontSize:20}},"BAO Field Tracking"),
-h("div",{style:{color:MUTED,fontSize:13,marginTop:4}},"Sign in to continue")),
-err&&h("div",{style:{background:"#dc262622",border:"1px solid #dc2626",borderRadius:10,padding:"10px 14px",color:"#f87171",textAlign:"center",fontSize:13,marginBottom:14}},err),
-h("div",{style:{marginBottom:14}},h("label",{style:{color:SUB,fontSize:12,display:"block",marginBottom:6}},"Username"),h("input",{type:"text",value:id,onChange:e=>setId(e.target.value),placeholder:"juan.reyes",style:inp,autoComplete:"username"})),
-h("div",{style:{marginBottom:20}},h("label",{style:{color:SUB,fontSize:12,display:"block",marginBottom:6}},"PIN"),h("input",{type:"password",value:pin,onChange:e=>setPin(e.target.value),placeholder:"••••",style:inp,onKeyDown:e=>e.key==="Enter"&&go(),autoComplete:"current-password"})),
-h(Btn,{onClick:go,disabled:loading,style:{width:"100%",padding:"13px",fontSize:15}},loading?"Signing in...":"Sign In")));}
-// ── Home Location Setup ───────────────────────────────────────────────────────
-function HomeLoc({user,onDone}){
-const[lat,setLat]=useState(null),[lon,setLon]=useState(null),[saving,setSaving]=useState(false),[err,setErr]=useState(null);
-useEffect(()=>{
-if(!navigator.geolocation){setErr("Geolocation not supported.");return;}
-navigator.geolocation.getCurrentPosition(p=>{setLat(p.coords.latitude);setLon(p.coords.longitude);},e=>setErr("Location denied: "+e.message));},[]);
-const save=async()=>{
-if(lat==null||lon==null){setErr("Waiting for GPS...");return;}
-setSaving(true);
-const{error}=await sb.from("home_locations").insert({user_id:user.id,lat,lon});
-if(error){setErr(error.message);}else{onDone();}
-setSaving(false);};
-return h("div",{style:{minHeight:"100vh",background:BG,display:"flex",alignItems:"center",justifyContent:"center",padding:16}},
-h("div",{style:{width:"100%",maxWidth:360}},
-h("div",{style:{textAlign:"center",marginBottom:24}},
-h("div",{style:{fontSize:40,marginBottom:10}},"📍"),
-h("div",{style:{color:TEXT,fontWeight:700,fontSize:18}},"Set Your Home Location"),
-h("div",{style:{color:MUTED,fontSize:13,marginTop:6}},"We need your GPS to verify you're at your assigned area.")),
-err&&h("div",{style:{background:"#dc262622",border:"1px solid #dc2626",borderRadius:10,padding:"10px 14px",color:"#f87171",textAlign:"center",fontSize:13,marginBottom:14}},err),
-lat!=null&&h("div",{style:{background:"#16a34a22",border:"1px solid #16a34a",borderRadius:10,padding:"10px 14px",color:"#4ade80",textAlign:"center",fontSize:13,marginBottom:14}},
-"GPS locked: "+lat.toFixed(5)+", "+lon.toFixed(5)),
-h(Btn,{onClick:save,disabled:saving||lat==null,style:{width:"100%",padding:"13px",fontSize:15}},saving?"Saving...":"✓ Confirm Home Location")));}
-// ── Agent Dashboard ───────────────────────────────────────────────────────────
-function AgentDash({user,onLogout}){
-const[active,setActive]=useState(null),[toast,setToast]=useState(null),[selfieOpen,setSelfieOpen]=useState(false),[selfieType,setSelfieType]=useState("in");
-const[timeIn,setTimeIn]=useState(null),[wps,setWps]=useState([]),[watchId,setWatchId]=useState(null);
-const toast2=(msg,ok)=>{ok=ok===undefined?true:ok;setToast({msg,ok});setTimeout(()=>setToast(null),3000);};
-useEffect(()=>{
-const saved=loadActiveLog();
-if(saved&&saved.user_id===user.id){setActive(saved);setTimeIn(new Date(saved.time_in));}
-},[user.id]);
-useEffect(()=>{
-if(!active||watchId!=null)return;
-const id=navigator.geolocation.watchPosition(p=>{
-const wp={lat:p.coords.latitude,lon:p.coords.longitude,ts:Date.now(),acc:p.coords.accuracy};
-setWps(prev=>{const next=[...prev,wp];saveWpsBuffer(active.id,next);return next;});
-},e=>console.warn("GPS watch error:",e),{enableHighAccuracy:true,maximumAge:5000,timeout:15000});
-setWatchId(id);
-return()=>{if(watchId!=null)navigator.geolocation.clearWatch(watchId);};},[active]);
-const clockIn=async(blobUrl)=>{
-const pos=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{enableHighAccuracy:true}));
-const log={id:user.id+"-"+Date.now(),user_id:user.id,display_name:user.display_name,lat:pos.coords.latitude,lon:pos.coords.longitude,time_in:new Date().toISOString(),blob_id:blobUrl||null};
-const{error}=await sb.from("time_logs").insert(log);
-if(error){toast2(error.message,false);return;}
-const wpBuf=loadWpsBuffer(log.id);
-if(wpBuf.length>0){const{error:rErr}=await sb.from("route_logs").insert({id:log.id,user_id:user.id,date:fmtD(log.time_in),waypoints:wpBuf,total_km:calcKm(wpBuf)});if(rErr)console.warn("Route save failed:",rErr);clearWpsBuffer(log.id);}
-saveActiveLog(log);setActive(log);setTimeIn(new Date());toast2("Clocked in! ✓");};
-const clockOut=async(blobUrl)=>{
-if(!active)return;
-const pos=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{enableHighAccuracy:true}));
-const updates={time_out:new Date().toISOString(),timeout_lat:pos.coords.latitude,timeout_lon:pos.coords.longitude,timeout_blob_id:blobUrl||null};
-const{error}=await sb.from("time_logs").update(updates).eq("id",active.id);
-if(error){toast2(error.message,false);return;}
-const wpBuf=loadWpsBuffer(active.id);
-if(wpBuf.length>0){const{error:rErr}=await sb.from("route_logs").upsert({id:active.id,user_id:user.id,date:fmtD(active.time_in),waypoints:wpBuf,total_km:calcKm(wpBuf)});if(rErr)console.warn("Route update failed:",rErr);clearWpsBuffer(active.id);}
-clearActiveLog();setActive(null);setWps([]);setTimeIn(null);toast2("Clocked out! ✓");};
-const startSelfie=(type)=>{setSelfieType(type);setSelfieOpen(true);};
-const onSelfie=(url)=>{if(selfieType==="in")clockIn(url);else clockOut(url);};
-const inp={width:"100%",background:BG,border:"1px solid "+BORDER,borderRadius:10,padding:"12px 14px",color:TEXT,fontSize:15,boxSizing:"border-box",colorScheme:"dark"};
-return h("div",{style:{minHeight:"100vh",background:BG,paddingBottom:40}},
-h("header",{style:{background:CARD,borderBottom:"1px solid "+BORDER,padding:"0 16px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between"}},
-h("div",{style:{display:"flex",alignItems:"center",gap:8}},
-h("div",{style:{width:30,height:30,background:O,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,color:"#fff",fontSize:13}},"B"),
-h("div",null,h("div",{style:{color:TEXT,fontWeight:700,fontSize:13}},user.display_name),h("div",{style:{color:MUTED,fontSize:11}},user.role))),
-h(Btn,{onClick:onLogout,bg:"#27272A",style:{padding:"5px 12px",fontSize:12}},"Logout")),
-h("div",{style:{maxWidth:400,margin:"0 auto",padding:"20px 16px"}},
-toast&&h("div",{style:{background:toast.ok?"#16a34a33":"#dc262633",border:"1px solid "+(toast.ok?"#16a34a":"#dc2626"),borderRadius:10,padding:"10px 16px",color:toast.ok?"#4ade80":"#f87171",textAlign:"center",fontWeight:600,marginBottom:14}},toast.msg),
-!active&&h(Card,{style:{textAlign:"center"}},
-h("div",{style:{fontSize:40,marginBottom:10}},"👷"),
-h("div",{style:{color:TEXT,fontWeight:700,fontSize:18,marginBottom:6}},"Ready to work?"),
-h("div",{style:{color:MUTED,fontSize:13,marginBottom:20}},"Tap below to clock in with a selfie."),
-h(Btn,{onClick:()=>startSelfie("in"),style:{width:"100%",padding:"14px",fontSize:16}},"📷 Clock In")),
-active&&h("div",{style:{display:"flex",flexDirection:"column",gap:12}},
-h(Card,{style:{textAlign:"center",borderLeft:"3px solid #22c55e"}},
-h("div",{style:{color:SUB,fontSize:11,textTransform:"uppercase",letterSpacing:1,marginBottom:4}},"Clocked In Since"),
-h("div",{style:{color:"#22c55e",fontSize:28,fontWeight:800}},fmtT(active.time_in)),
-h("div",{style:{color:MUTED,fontSize:12,marginTop:4}},fmtD(active.time_in)),
-timeIn&&h("div",{style:{color:O,fontSize:14,fontWeight:700,marginTop:10}},fmtDur(active.time_in,new Date()))),
-h(Card,{style:{textAlign:"center"}},
-h("div",{style:{color:SUB,fontSize:11,textTransform:"uppercase",letterSpacing:1,marginBottom:4}},"GPS Waypoints"),
-h("div",{style:{color:TEXT,fontSize:24,fontWeight:800}},wps.length),
-h("div",{style:{color:MUTED,fontSize:12,marginTop:4}},"tracking your route")),
-h(Btn,{onClick:()=>startSelfie("out"),bg:"#dc2626",style:{width:"100%",padding:"14px",fontSize:16}},"📷 Clock Out"))),
-h(SelfieModal,{isOpen:selfieOpen,title:selfieType==="in"?"Clock In Selfie":"Clock Out Selfie",onCapture:onSelfie,onCancel:()=>setSelfieOpen(false)}));}
-// ── Root ──────────────────────────────────────────────────────────────────────
-function App(){
-const[user,setUser]=useState(null),[view,setView]=useState("login"),[chk,setChk]=useState(false);
-const login=async ud=>{
-setChk(true);
-const{data}=await sb.from("home_locations").select("id").eq("user_id",ud.id).maybeSingle();
-setUser(ud);
-if(ud.role==="admin")setView("admin");
-else if(!data)setView("home");
-else setView("agent");
-setChk(false);};
-const logout=()=>{setUser(null);setView("login");};
-if(chk)return h("div",{style:{minHeight:"100vh",background:BG,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:14}},
-h("div",{style:{width:52,height:52,background:O,borderRadius:13,display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,fontWeight:800,color:"#fff"}},"B"),
-h("div",{style:{color:SUB,fontSize:13}},"Loading BAO Field Tracking..."));
-if(view==="login")return h(Login,{onLogin:login});
-if(view==="home")return h(HomeLoc,{user,onDone:()=>setView("agent")});
-if(view==="agent")return h(AgentDash,{user,onLogout:logout});
-if(view==="admin")return h(AdminDash,{user,onLogout:logout});}
-ReactDOM.createRoot(document.getElementById("root")).render(h(App,null));
-</script>
+    <div id="root"></div>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js">
+    </script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js">
+    </script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js">
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js">
+    </script>
+    <script>
+        const { createElement: h, useState, useEffect, useRef } = React;
+        const { createClient } = supabase;
+        const SURL = "https://pxhxohybdippppzagcxu.supabase.co";
+        const SKEY =
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4aHhvaHliZGlwcHBwemFnY3h1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4OTIxMDcsImV4cCI6MjA5MTQ2ODEwN30.E1ag_mzm8ngeGO7vDeDYUPJChrsGJAsIhrfEW2D3cEs";
+        const sb = createClient(SURL, SKEY);
+        const O = "#F97316",
+            BG = "#09090B",
+            CARD = "#18181B",
+            BORDER = "#27272A",
+            MUTED = "#71717A",
+            TEXT = "#FAFAFA",
+            SUB = "#A1A1AA";
+
+        // ── localStorage waypoint buffer key ─────────────────────────────────────────
+        const WPS_PREFIX = "bao_wps_";
+
+        function loadWpsBuffer(logId) { try { return JSON.parse(localStorage.getItem(WPS_PREFIX + logId) || "[]"); } catch { return []; } }
+
+        function saveWpsBuffer(logId, wps) { try { localStorage.setItem(WPS_PREFIX + logId, JSON.stringify(wps)); } catch {} }
+
+        function clearWpsBuffer(logId) { localStorage.removeItem(WPS_PREFIX + logId); }
+        const ACTIVE_KEY = "bao_active_log";
+
+        function saveActiveLog(obj) { localStorage.setItem(ACTIVE_KEY, JSON.stringify(obj)); }
+
+        function loadActiveLog() { try { return JSON.parse(localStorage.getItem(ACTIVE_KEY) || "null"); } catch { return null; } }
+
+        function clearActiveLog() { localStorage.removeItem(ACTIVE_KEY); }
+
+        async function hashPin(p) { const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(p)); return Array
+                .from(new Uint8Array(b)).map(x => x.toString(16).padStart(2, "0")).join(""); }
+
+        function sameDay(a, b) { const da = new Date(a),
+                db = new Date(b); return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da
+                .getDate() === db.getDate(); }
+
+        function fmtT(ts) { return ts ? new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit",
+                hour12: true }) : "—"; }
+
+        function fmtD(ts) { return ts ? new Date(ts).toLocaleDateString("en-US", { month: "short", day: "2-digit",
+                year: "numeric" }) : "—"; }
+
+        function fmtDur(a, b) { if (!a || !b) return "—"; const ms = new Date(b) - new Date(a),
+                hh = Math.floor(ms / 3600000),
+                mm = Math.floor((ms % 3600000) / 60000); return hh + "h " + mm + "m"; }
+
+        function toLocalDT(ts) { if (!ts) return ""; const d = new Date(ts); d.setMinutes(d.getMinutes() - d
+                .getTimezoneOffset()); return d.toISOString().slice(0, 16); }
+
+        function haversineKm(lat1, lon1, lat2, lon2) {
+            const R = 6371,
+                dLat = (lat2 - lat1) * Math.PI / 180,
+                dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(
+                dLon / 2) ** 2;
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
+
+        function calcKm(wps) { let t = 0; for (let i = 1; i < wps.length; i++) t += haversineKm(wps[i - 1].lat, wps[i - 1]
+                .lon, wps[i].lat, wps[i].lon); return Math.round(t * 100) / 100; }
+
+        // ── OSRM Road-Snapping ────────────────────────────────────────────────────────
+        const OSRM_BASE = "https://router.project-osrm.org/match/v1/driving/";
+        const OSRM_CACHE = {};
+
+        async function osrmMatchChunk(wps) {
+            const coords = wps.map(w => w.lon.toFixed(6) + "," + w.lat.toFixed(6)).join(";");
+            const radiuses = wps.map(() => "50").join(";");
+            const url = OSRM_BASE + coords +
+                "?overview=full&geometries=geojson&radiuses=" + radiuses + "&gaps=split&tidy=true";
+            const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+            if (!res.ok) throw new Error("OSRM HTTP " + res.status);
+            const json = await res.json();
+            if (json.code !== "Ok") throw new Error("OSRM code: " + json.code);
+            const pts = [];
+            for (const matching of json.matchings) {
+                const coords = matching.geometry.coordinates;
+                for (const c of coords) pts.push([c[1], c[0]]);
+            }
+            return pts;
+        }
+
+        async function osrmMatchRoute(wps) {
+            if (!wps || wps.length < 2) return { pts: wps.map(w => [w.lat, w.lon]), snapped: false };
+            const CHUNK = 100;
+            const chunks = [];
+            for (let i = 0; i < wps.length; i += CHUNK - 1) {
+                chunks.push(wps.slice(i, i + CHUNK));
+                if (i + CHUNK >= wps.length) break;
+            }
+            try {
+                const allPts = [];
+                for (let i = 0; i < chunks.length; i++) {
+                    const pts = await osrmMatchChunk(chunks[i]);
+                    allPts.push(...(i === 0 ? pts : pts.slice(1)));
+                }
+                if (allPts.length < 2) throw new Error("empty result");
+                return { pts: allPts, snapped: true };
+            } catch (e) {
+                console.warn("OSRM match failed, using raw GPS:", e.message);
+                return { pts: wps.map(w => [w.lat, w.lon]), snapped: false };
+            }
+        }
+
+        async function compressImg(file) {
+            return new Promise(res => {
+                const img = new Image(),
+                    url = URL.createObjectURL(file);
+                img.onload = () => {
+                    URL.revokeObjectURL(url);
+                    const MAX = 800,
+                        scale = img.width > MAX ? MAX / img.width : 1,
+                        w = Math.round(img.width * scale),
+                        hh = Math.round(img.height * scale),
+                        c = document.createElement("canvas");
+                    c.width = w;
+                    c.height = hh;
+                    c.getContext("2d").drawImage(img, 0, 0, w, hh);
+                    c.toBlob(blob => res(new File([blob], file.name, { type: "image/jpeg" })), "image/jpeg", 0.7);
+                };
+                img.onerror = () => res(file);
+                img.src = url;
+            });
+        }
+
+        async function uploadSelfie(file) {
+            const comp = await compressImg(file);
+            const name = "selfies/" + Date.now() + "-" + Math.random().toString(36).slice(2) + ".jpg";
+            const { error } = await sb.storage.from("selfies").upload(name, comp, { contentType: "image/jpeg" });
+            if (error) throw new Error(error.message);
+            return sb.storage.from("selfies").getPublicUrl(name).data.publicUrl;
+        }
+
+        function SyncBtn({ onSync }) {
+            const [syncing, setSyncing] = useState(false);
+            const go = async () => { if (syncing) return;
+                setSyncing(true); try { await onSync(); } finally { setSyncing(false); } };
+            return h("button", {
+                onClick: go,
+                title: "Sync all data",
+                style: { background: "#27272A", border: "1px solid " + BORDER, color: syncing ? O : SUB, borderRadius: 8,
+                    padding: "5px 10px", fontSize: 16, cursor: syncing ? "not-allowed" : "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center", transition: "color .2s",
+                    lineHeight: 1 }
+            }, h("span", { className: syncing ? "spin" : "" }, "⟳"));
+        }
+
+        function Btn({ children, onClick, bg, style, disabled }) {
+            bg = bg || O;
+            return h("button", {
+                onClick,
+                disabled,
+                style: Object.assign({ background: disabled ? "#3f3f46" : bg, color: disabled ? MUTED : "#fff",
+                    border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 14, fontWeight: 700,
+                    cursor: disabled ? "not-allowed" : "pointer" }, style || {})
+            }, children);
+        }
+
+        function Card({ children, style }) { return h("div", { style: Object.assign({ background: CARD,
+                    border: "1px solid " + BORDER, borderRadius: 14, padding: 20 }, style || {}) }, children); }
+
+        // ── Selfie Modal ──────────────────────────────────────────────────────────────
+        function SelfieModal({ isOpen, title, onCapture, onCancel }) {
+            const vRef = useRef(),
+                cRef = useRef(),
+                stRef = useRef();
+            const [pre, setPre] = useState(null),
+                [file, setFile] = useState(null),
+                [up, setUp] = useState(false),
+                [err, setErr] = useState(null),
+                [rdy, setRdy] = useState(false);
+            useEffect(() => {
+                if (!isOpen) return;
+                setPre(null);
+                setFile(null);
+                setErr(null);
+                setRdy(false);
+                navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false })
+                    .then(st => { stRef.current = st; if (vRef.current) { vRef.current.srcObject = st;
+                            setRdy(true); } })
+                    .catch(e => setErr("Camera denied: " + e.message));
+                return () => { if (stRef.current) { stRef.current.getTracks().forEach(t => t.stop());
+                        stRef.current = null; } };
+            }, [isOpen]);
+            const snap = () => {
+                const v = vRef.current,
+                    c = cRef.current;
+                if (!v || !c) return;
+                c.width = v.videoWidth;
+                c.height = v.videoHeight;
+                const ctx = c.getContext("2d");
+                ctx.translate(c.width, 0);
+                ctx.scale(-1, 1);
+                ctx.drawImage(v, 0, 0);
+                c.toBlob(b => { const f = new File([b], "s.jpg", { type: "image/jpeg" });
+                    setFile(f);
+                    setPre(URL.createObjectURL(b)); if (stRef.current) { stRef.current.getTracks().forEach(t =>
+                            t.stop());
+                        stRef.current = null; } }, "image/jpeg", .9);
+            };
+            const retake = () => { setPre(null);
+                setFile(null);
+                setErr(null);
+                setRdy(false);
+                navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false }).then(st => {
+                    stRef.current = st; if (vRef.current) { vRef.current.srcObject = st;
+                        setRdy(true); } }).catch(e => setErr(e.message)); };
+            const confirm = async () => { if (!file) return;
+                setUp(true);
+                setErr(null); try { const url = await uploadSelfie(file);
+                    onCapture(url); } catch (e) { setErr("Upload failed — try again."); } finally { setUp(false); } };
+            if (!isOpen) return null;
+            return h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,.88)", zIndex: 9999,
+                    display: "flex", alignItems: "center", justifyContent: "center", padding: 16 } },
+                h("div", { style: { background: CARD, border: "1px solid " + BORDER, borderRadius: 16, width: "100%",
+                        maxWidth: 360, padding: 20 } },
+                    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center",
+                            marginBottom: 14 } },
+                        h("span", { style: { color: TEXT, fontWeight: 700, fontSize: 16 } }, title),
+                        h("button", { onClick: onCancel, style: { background: "none", border: "none",
+                                color: MUTED, fontSize: 24, cursor: "pointer", lineHeight: 1 } }, "×")
+                    ),
+                    h("div", { style: { background: "#000", borderRadius: 12, overflow: "hidden",
+                            minHeight: 260, position: "relative" } },
+                        !pre && h("video", { ref: vRef, autoPlay: true, playsInline: true, muted: true,
+                            style: { width: "100%", transform: "scaleX(-1)", display: "block",
+                                minHeight: 260, objectFit: "cover" } }),
+                        !pre && !rdy && !err && h("div", { style: { position: "absolute", inset: 0,
+                                display: "flex", alignItems: "center",
+                                justifyContent: "center", color: SUB, fontSize: 13 } },
+                            "Starting camera..."),
+                        pre && h("img", { src: pre, style: { width: "100%", display: "block" } }),
+                        err && h("div", { style: { position: "absolute", inset: 0, display: "flex",
+                                alignItems: "center", justifyContent: "center",
+                                background: "#00000099", color: "#f87171", padding: 16,
+                                textAlign: "center", fontSize: 13 } }, err)
+                    ),
+                    h("canvas", { ref: cRef, style: { display: "none" } }),
+                    err && pre && h("div", { style: { color: "#f87171", fontSize: 13, marginTop: 8,
+                            textAlign: "center" } }, err),
+                    h("div", { style: { display: "flex", gap: 10, marginTop: 14 } },
+                        h(Btn, { onClick: onCancel, bg: "#27272A", style: { flex: 1 } }, "Cancel"),
+                        !pre ?
+                        h(Btn, { onClick: snap, disabled: !rdy, style: { flex: 1 } }, "📷 Take Selfie") :
+                        h("div", { style: { display: "flex", gap: 8, flex: 1 } },
+                            h(Btn, { onClick: retake, bg: "#27272A", style: { flex: 1 } }, "↺ Retake"),
+                            h(Btn, { onClick: confirm, disabled: up, style: { flex: 1 } }, up ?
+                                "Uploading..." : "✓ Use Photo")
+                        )
+                    )
+                )
+            );
+        }
+
+        // ── Edit Log Modal ────────────────────────────────────────────────────────────
+        function EditLogModal({ isOpen, log, onSave, onCancel }) {
+            const [timeIn, setTimeIn] = useState(""),
+                [timeOut, setTimeOut] = useState(""),
+                [saving, setSaving] = useState(false);
+            useEffect(() => { if (!isOpen || !log) return;
+                setTimeIn(toLocalDT(log.time_in));
+                setTimeOut(toLocalDT(log.time_out)); }, [isOpen, log]);
+            const save = async () => { if (!timeIn) return;
+                setSaving(true); await onSave({ time_in: new Date(timeIn).toISOString(), time_out: timeOut ? new Date(
+                        timeOut).toISOString() : null });
+                setSaving(false); };
+            if (!isOpen || !log) return null;
+            const inp = { width: "100%", background: BG, border: "1px solid " + BORDER, borderRadius: 8,
+                padding: "9px 11px", color: TEXT, fontSize: 13, boxSizing: "border-box", colorScheme: "dark" };
+            const lbl = { color: SUB, fontSize: 12, display: "block", marginBottom: 5 };
+            return h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,.88)", zIndex: 9999,
+                    display: "flex", alignItems: "center", justifyContent: "center", padding: 16 } },
+                h("div", { style: { background: CARD, border: "1px solid " + BORDER, borderRadius: 16, width: "100%",
+                        maxWidth: 400, padding: 24 } },
+                    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center",
+                            marginBottom: 18 } },
+                        h("span", { style: { color: TEXT, fontWeight: 700, fontSize: 16 } }, "✏ Edit Log"),
+                        h("button", { onClick: onCancel, style: { background: "none", border: "none",
+                                color: MUTED, fontSize: 24, cursor: "pointer", lineHeight: 1 } }, "×")
+                    ),
+                    h("div", { style: { background: "#27272A", borderRadius: 8, padding: "8px 12px",
+                            marginBottom: 16, fontSize: 12, color: SUB } },
+                        h("span", { style: { color: TEXT, fontWeight: 600 } }, log.display_name),
+                        h("span", null, " · "), h("span", null, fmtD(log.time_in))
+                    ),
+                    h("div", { style: { marginBottom: 14 } }, h("label", { style: lbl }, "Time In"), h("input",
+                        { type: "datetime-local", value: timeIn, onChange: e => setTimeIn(e.target
+                                .value), style: inp })),
+                    h("div", { style: { marginBottom: 20 } },
+                        h("div", { style: { display: "flex", justifyContent: "space-between",
+                                alignItems: "center", marginBottom: 5 } },
+                            h("label", { style: Object.assign({}, lbl, { marginBottom: 0 }) },
+                                "Time Out"),
+                            timeOut && h("button", { onClick: () => setTimeOut(""), style: { background: "none",
+                                    border: "none", color: "#f87171", fontSize: 11,
+                                    cursor: "pointer", padding: 0 } }, "✕ Clear")
+                        ),
+                        h("input", { type: "datetime-local", value: timeOut, onChange: e => setTimeOut(e
+                                .target.value), style: inp }),
+                        h("div", { style: { color: MUTED, fontSize: 11, marginTop: 4 } },
+                            "Leave empty if agent has not clocked out")
+                    ),
+                    timeIn && timeOut && new Date(timeOut) < new Date(timeIn) && h("div", { style: { color: "#f87171",
+                            fontSize: 12, marginBottom: 12, padding: "7px 10px",
+                            background: "#dc262622", borderRadius: 7 } },
+                        "⚠ Time Out is before Time In"),
+                    h("div", { style: { display: "flex", gap: 10 } },
+                        h(Btn, { onClick: onCancel, bg: "#27272A", style: { flex: 1 } }, "Cancel"),
+                        h(Btn, { onClick: save, disabled: saving || !timeIn, style: { flex: 1 } },
+                            saving ? "Saving..." : "Save Changes")
+                    )
+                )
+            );
+        }
+
+        // ── Add Log Modal (Admin adds log on behalf of agent) ──────────────────────
+        function AddLogModal({ isOpen, users, onSave, onCancel }) {
+            const [form, setForm] = useState({ user_id: "", time_in: "", time_out: "", lat: "", lon: "" });
+            const [saving, setSaving] = useState(false);
+            const [err, setErr] = useState("");
+            const [locating, setLocating] = useState(false);
+
+            useEffect(() => {
+                if (!isOpen) return;
+                setForm({ user_id: "", time_in: "", time_out: "", lat: "", lon: "" });
+                setErr("");
+                setSaving(false);
+            }, [isOpen]);
+
+            const useCurrentLocation = () => {
+                setLocating(true);
+                setErr("");
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => {
+                        setForm(f => ({ ...f, lat: pos.coords.latitude.toFixed(6), lon: pos.coords
+                                .longitude.toFixed(6) }));
+                        setLocating(false);
+                    },
+                    () => { setErr("GPS failed. Enter location manually.");
+                        setLocating(false); }, { enableHighAccuracy: true, timeout: 15000 }
+                );
+            };
+
+            const save = async () => {
+                if (!form.user_id) { setErr("Select an agent."); return; }
+                if (!form.time_in) { setErr("Enter Time In."); return; }
+                if (form.time_out && new Date(form.time_out) < new Date(form.time_in)) { setErr(
+                    "Time Out cannot be before Time In."); return; }
+                setSaving(true);
+                setErr("");
+                try {
+                    await onSave({
+                        user_id: form.user_id,
+                        time_in: new Date(form.time_in).toISOString(),
+                        time_out: form.time_out ? new Date(form.time_out).toISOString() : null,
+                        lat: form.lat ? parseFloat(form.lat) : null,
+                        lon: form.lon ? parseFloat(form.lon) : null
+                    });
+                } catch (e) { setErr(e.message || "Failed to save log."); } finally { setSaving(false); }
+            };
+
+            if (!isOpen) return null;
+            const inp = { width: "100%", background: BG, border: "1px solid " + BORDER, borderRadius: 8,
+                padding: "9px 11px", color: TEXT, fontSize: 13, boxSizing: "border-box", colorScheme: "dark" };
+            const lbl = { color: SUB, fontSize: 12, display: "block", marginBottom: 5 };
+
+            return h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,.88)", zIndex: 9999,
+                    display: "flex", alignItems: "center", justifyContent: "center", padding: 16 } },
+                h("div", { style: { background: CARD, border: "1px solid " + BORDER, borderRadius: 16, width: "100%",
+                        maxWidth: 420, padding: 24 } },
+                    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center",
+                            marginBottom: 18 } },
+                        h("span", { style: { color: TEXT, fontWeight: 700, fontSize: 16 } },
+                            "➕ Add Time Log for Agent"),
+                        h("button", { onClick: onCancel, style: { background: "none", border: "none",
+                                color: MUTED, fontSize: 24, cursor: "pointer", lineHeight: 1 } }, "×")
+                    ),
+                    h("div", { style: { marginBottom: 14 } },
+                        h("label", { style: lbl }, "Agent *"),
+                        h("select", { value: form.user_id, onChange: e => setForm(f => ({ ...f, user_id: e
+                                    .target.value })), style: inp },
+                            h("option", { value: "" }, "— Select agent —"),
+                            users.filter(u => u.role === "agent").map(u => h("option", { key: u.id,
+                                value: u.id }, u.display_name))
+                        )
+                    ),
+                    h("div", { style: { marginBottom: 14 } },
+                        h("label", { style: lbl }, "Time In *"),
+                        h("input", { type: "datetime-local", value: form.time_in, onChange: e => setForm(f =>
+                                ({ ...f, time_in: e.target.value })), style: inp })
+                    ),
+                    h("div", { style: { marginBottom: 14 } },
+                        h("label", { style: lbl }, "Time Out (optional)"),
+                        h("input", { type: "datetime-local", value: form.time_out, onChange: e => setForm(f =>
+                                ({ ...f, time_out: e.target.value })), style: inp })
+                    ),
+                    h("div", { style: { marginBottom: 14 } },
+                        h("div", { style: { display: "flex", justifyContent: "space-between",
+                                alignItems: "center", marginBottom: 5 } },
+                            h("label", { style: lbl }, "Location (lat, lon)"),
+                            h(Btn, { onClick: useCurrentLocation, disabled: locating, bg: "#27272A",
+                                style: { padding: "4px 10px", fontSize: 11 } },
+                                locating ? "📍 Locating..." : "📍 Use GPS")
+                        ),
+                        h("div", { style: { display: "flex", gap: 8 } },
+                            h("input", { placeholder: "Latitude", value: form.lat, onChange: e =>
+                                    setForm(f => ({ ...f, lat: e.target.value })), style: { ...inp,
+                                    flex: 1 } }),
+                            h("input", { placeholder: "Longitude", value: form.lon, onChange: e =>
+                                    setForm(f => ({ ...f, lon: e.target.value })), style: { ...inp,
+                                    flex: 1 } })
+                        )
+                    ),
+                    err && h("div", { style: { color: "#f87171", fontSize: 13, marginBottom: 12,
+                            background: "#dc262622", padding: "8px 12px", borderRadius: 6 } }, err),
+                    h("div", { style: { display: "flex", gap: 10 } },
+                        h(Btn, { onClick: onCancel, bg: "#27272A", style: { flex: 1 } }, "Cancel"),
+                        h(Btn, { onClick: save, disabled: saving || !form.user_id || !form.time_in,
+                            style: { flex: 1 } }, saving ? "Saving..." : "Save Log")
+                    )
+                )
+            );
+        }
+
+        // ── Login ─────────────────────────────────────────────────────────────────────
+        function Login({ onLogin }) {
+            const [un, setUn] = useState(""),
+                [pin, setPin] = useState(""),
+                [err, setErr] = useState(""),
+                [ld, setLd] = useState(false);
+            const go = async () => {
+                if (!un || !pin) { setErr("Enter username and PIN."); return; }
+                setLd(true);
+                setErr("");
+                try {
+                    const h2 = await hashPin(pin);
+                    const { data, error } = await sb.from("users").select("*").eq("id", un.trim().toLowerCase()).eq(
+                        "pin_hash", h2).single();
+                    if (error || !data) { setErr("Wrong username or PIN."); return; }
+                    onLogin(data);
+                } catch { setErr("Login failed."); } finally { setLd(false); }
+            };
+            const inp = { width: "100%", background: BG, border: "1px solid " + BORDER, borderRadius: 8,
+                padding: "10px 12px", color: TEXT, fontSize: 15, boxSizing: "border-box" };
+            return h("div", { style: { minHeight: "100vh", background: BG, display: "flex", alignItems: "center",
+                    justifyContent: "center", padding: 20 } },
+                h("div", { style: { width: "100%", maxWidth: 340 } },
+                    h("div", { style: { textAlign: "center", marginBottom: 28 } },
+                        h("div", { style: { width: 64, height: 64, background: O, borderRadius: 16,
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                margin: "0 auto 14px", fontSize: 28, fontWeight: 800, color: "#fff" } },
+                            "B"),
+                        h("h1", { style: { color: TEXT, fontSize: 22, fontWeight: 800 } },
+                            "BAO Field Tracking"),
+                        h("p", { style: { color: SUB, margin: "6px 0 0", fontSize: 13 } },
+                            "Sign in to continue")
+                    ),
+                    h(Card, null,
+                        h("div", { style: { marginBottom: 12 } },
+                            h("label", { style: { color: SUB, fontSize: 12, display: "block",
+                                    marginBottom: 5 } }, "Username"),
+                            h("input", { value: un, onChange: e => setUn(e.target.value),
+                                onKeyDown: e => e.key === "Enter" && go(), placeholder: "e.g. admin",
+                                style: inp })
+                        ),
+                        h("div", { style: { marginBottom: 16 } },
+                            h("label", { style: { color: SUB, fontSize: 12, display: "block",
+                                    marginBottom: 5 } }, "PIN"),
+                            h("input", { type: "password", value: pin, onChange: e => setPin(e.target
+                                    .value), onKeyDown: e => e.key === "Enter" && go(),
+                                placeholder: "••••", style: inp })
+                        ),
+                        err && h("div", { style: { color: "#f87171", fontSize: 13, marginBottom: 12,
+                                textAlign: "center" } }, err),
+                        h(Btn, { onClick: go, disabled: ld, style: { width: "100%" } }, ld ?
+                            "Signing in..." : "Sign In")
+                    )
+                )
+            );
+        }
+
+        // ── Home Location ─────────────────────────────────────────────────────────────
+        function HomeLoc({ user, onDone }) {
+            const mapRef = useRef(),
+                mapObj = useRef(),
+                markerRef = useRef();
+            const [coords, setCoords] = useState(null),
+                [saving, setSaving] = useState(false),
+                [err, setErr] = useState("");
+            useEffect(() => {
+                setTimeout(() => {
+                    if (!mapRef.current || mapObj.current) return;
+                    const L = window.L,
+                        map = L.map(mapRef.current).setView([12.88, 121.77], 6);
+                    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+                    mapObj.current = map;
+                    map.on("click", e => { const { lat, lng } = e.latlng;
+                        setCoords({ lat, lon: lng }); if (markerRef.current) map.removeLayer(markerRef
+                            .current);
+                        markerRef.current = L.marker([lat, lng]).addTo(map); });
+                }, 300);
+            }, []);
+            const gps = () => navigator.geolocation.getCurrentPosition(p => {
+                const { latitude: lat, longitude: lon } = p.coords;
+                setCoords({ lat, lon });
+                const map = mapObj.current,
+                    L = window.L;
+                if (map) { map.setView([lat, lon], 15); if (markerRef.current) map.removeLayer(markerRef
+                        .current);
+                    markerRef.current = L.marker([lat, lon]).addTo(map); }
+            }, () => setErr("GPS failed. Click the map instead."), { enableHighAccuracy: true, timeout: 15000 });
+            const save = async () => {
+                if (!coords) { setErr("Pick a location first."); return; }
+                setSaving(true);
+                const { error } = await sb.from("home_locations").upsert({ user_id: user.id, lat: coords.lat,
+                    lon: coords.lon });
+                if (error) { setErr(error.message);
+                    setSaving(false); return; }
+                onDone();
+            };
+            return h("div", { style: { minHeight: "100vh", background: BG, padding: 20 } },
+                h("div", { style: { maxWidth: 480, margin: "0 auto" } },
+                    h("div", { style: { textAlign: "center", marginBottom: 20 } },
+                        h("div", { style: { width: 48, height: 48, background: O, borderRadius: 12,
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                margin: "0 auto 10px", fontSize: 22, fontWeight: 800, color: "#fff" } },
+                            "B"),
+                        h("h2", { style: { color: TEXT, fontSize: 18, fontWeight: 700 } },
+                            "Set Home Location"),
+                        h("p", { style: { color: SUB, fontSize: 13, margin: "5px 0 0" } },
+                            "Click the map or use GPS to set your base")
+                    ),
+                    h(Btn, { onClick: gps, style: { width: "100%", marginBottom: 12 } },
+                        "📍 Use My GPS Location"),
+                    h("div", { ref: mapRef, style: { width: "100%", height: 320, borderRadius: 12,
+                            overflow: "hidden", border: "1px solid " + BORDER, marginBottom: 12 } }),
+                    coords && h("div", { style: { color: SUB, fontSize: 12, textAlign: "center",
+                            marginBottom: 10 } }, "📌 " + coords.lat.toFixed(5) + ", " + coords.lon
+                        .toFixed(5)),
+                    err && h("div", { style: { color: "#f87171", fontSize: 13, textAlign: "center",
+                            marginBottom: 10 } }, err),
+                    h(Btn, { onClick: save, disabled: saving || !coords, style: { width: "100%" } },
+                        saving ? "Saving..." : "Save Home Location")
+                )
+            );
+        }
+
+        // ── Agent Dashboard ───────────────────────────────────────────────────────────
+        function AgentDash({ user, onLogout }) {
+            const [logs, setLogs] = useState([]),
+                [now, setNow] = useState(new Date());
+            const [showCam, setShowCam] = useState(false),
+                [mode, setMode] = useState("in");
+            const [sub, setSub] = useState(false),
+                [toast, setToast] = useState(null),
+                [copied, setCopied] = useState(false);
+            const [trackKm, setTrackKm] = useState(0),
+                [wpCount, setWpCount] = useState(0),
+                [gpsStatus, setGpsStatus] = useState("idle");
+
+            const watchIdRef = useRef(null);
+            const activeLogRef = useRef(null);
+
+            useEffect(() => {
+                load();
+                const t = setInterval(() => setNow(new Date()), 1000);
+                resumeIfNeeded();
+                return () => { clearInterval(t);
+                    stopWatch(); };
+            }, []);
+
+            const load = async () => {
+                const { data } = await sb.from("time_logs").select("*").eq("user_id", user.id).order("time_in", {
+                    ascending: false }).limit(20);
+                setLogs(data || []);
+            };
+
+            const resumeIfNeeded = () => {
+                const saved = loadActiveLog();
+                if (!saved || saved.userId !== user.id) return;
+                const today = new Date().toISOString().slice(0, 10);
+                if (saved.date !== today) { clearActiveLog(); return; }
+                activeLogRef.current = saved.logId;
+                const existing = loadWpsBuffer(saved.logId);
+                if (existing.length > 0) { setTrackKm(calcKm(existing));
+                    setWpCount(existing.length); }
+                startWatch(saved.logId);
+            };
+
+            const startWatch = (logId) => {
+                if (watchIdRef.current !== null) return;
+                activeLogRef.current = logId;
+                setGpsStatus("watching");
+                watchIdRef.current = navigator.geolocation.watchPosition(
+                    (pos) => {
+                        const pt = { lat: pos.coords.latitude, lon: pos.coords.longitude, ts: new Date()
+                                .toISOString() };
+                        const buf = loadWpsBuffer(logId);
+                        if (buf.length > 0) {
+                            const last = buf[buf.length - 1];
+                            const dist = haversineKm(last.lat, last.lon, pt.lat, pt.lon) * 1000;
+                            if (dist < 5) return;
+                        }
+                        const updated = [...buf, pt];
+                        saveWpsBuffer(logId, updated);
+                        setTrackKm(calcKm(updated));
+                        setWpCount(updated.length);
+                        setGpsStatus("watching");
+                    },
+                    (err) => { console.warn("GPS watch error:", err.message);
+                        setGpsStatus("error"); }, { enableHighAccuracy: true, timeout: 30000,
+                        maximumAge: 10000 }
+                );
+            };
+
+            const stopWatch = () => {
+                if (watchIdRef.current !== null) { navigator.geolocation.clearWatch(watchIdRef.current);
+                    watchIdRef.current = null; }
+                setGpsStatus("idle");
+            };
+
+            const flushRoute = async (logId, userId, displayName) => {
+                const wps = loadWpsBuffer(logId);
+                if (wps.length === 0) { clearWpsBuffer(logId);
+                    clearActiveLog(); return; }
+                const totalKm = calcKm(wps);
+                const date = new Date().toISOString().slice(0, 10);
+                try {
+                    await sb.from("route_logs").upsert({ id: logId, user_id: userId, display_name: displayName,
+                        date, waypoints: wps, total_km: totalKm });
+                    clearWpsBuffer(logId);
+                    clearActiveLog();
+                } catch (e) { console.error("Route flush error", e); }
+                setTrackKm(0);
+                setWpCount(0);
+            };
+
+            const toast2 = (msg, ok) => { ok = ok === undefined ? true : ok;
+                setToast({ msg, ok });
+                setTimeout(() => setToast(null), 3500); };
+            const latest = logs[0] || null;
+            const clocked = latest && !latest.time_out && sameDay(latest.time_in, now);
+            const forgot = latest && !latest.time_out && !sameDay(latest.time_in, now);
+
+            useEffect(() => {
+                if (clocked && latest && watchIdRef.current === null && activeLogRef.current === null) {
+                    activeLogRef.current = latest.id;
+                    saveActiveLog({ logId: latest.id, userId: user.id, date: new Date().toISOString().slice(0,
+                            10) });
+                    startWatch(latest.id);
+                }
+            }, [logs]);
+
+            const cap = async url => {
+                setShowCam(false);
+                setSub(true);
+                try {
+                    const pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, {
+                        enableHighAccuracy: true, timeout: 15000 }));
+                    const lat = pos.coords.latitude,
+                        lon = pos.coords.longitude;
+                    if (mode === "in") {
+                        const id = user.id + "-" + Date.now();
+                        const { error } = await sb.from("time_logs").insert({ id, user_id: user.id,
+                            display_name: user.display_name, blob_id: url, lat, lon, time_in: new Date()
+                                .toISOString() });
+                        if (error) throw error;
+                        saveWpsBuffer(id, [{ lat, lon, ts: new Date().toISOString() }]);
+                        saveActiveLog({ logId: id, userId: user.id, date: new Date().toISOString().slice(0,
+                            10) });
+                        startWatch(id);
+                        toast2("Time In recorded! Route tracking started 📍");
+                    } else {
+                        stopWatch();
+                        const logId = latest.id;
+                        const { error } = await sb.from("time_logs").update({ time_out: new Date()
+                                .toISOString(), timeout_blob_id: url, timeout_lat: lat,
+                            timeout_lon: lon }).eq("id", logId);
+                        if (error) throw error;
+                        await flushRoute(logId, user.id, user.display_name);
+                        activeLogRef.current = null;
+                        toast2("Time Out recorded! Route saved ✅");
+                    }
+                    load();
+                } catch (e) { toast2(e.message || "Failed.", false); } finally { setSub(false); }
+            };
+
+            const dateStr = now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long",
+                day: "numeric" });
+            const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+            const gpsColor = gpsStatus === "watching" ? O : gpsStatus === "error" ? "#f87171" : MUTED;
+            const gpsLabel = gpsStatus === "watching" ? "GPS active" : gpsStatus === "error" ?
+                "GPS signal lost (retrying...)" : "GPS idle";
+            const gpsDot = gpsStatus === "watching" ? O : gpsStatus === "error" ? "#f87171" : "#3f3f46";
+
+            return h("div", { style: { minHeight: "100vh", background: BG, paddingBottom: 40 } },
+                h("header", { style: { background: CARD, borderBottom: "1px solid " + BORDER, padding: "0 16px",
+                        height: 54, display: "flex", alignItems: "center",
+                        justifyContent: "space-between" } },
+                    h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                        h("div", { style: { width: 30, height: 30, background: O, borderRadius: 8,
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                fontWeight: 800, color: "#fff", fontSize: 13 } }, "B"),
+                        h("span", { style: { color: TEXT, fontWeight: 700, fontSize: 14 } },
+                            "BAO Field Tracking")
+                    ),
+                    h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+                        h("button", { onClick: () => { navigator.clipboard.writeText(user.id);
+                                setCopied(true);
+                                setTimeout(() => setCopied(false), 2000); }, style: { background: "#27272A",
+                                border: "none", color: SUB, borderRadius: 20, padding: "3px 10px",
+                                fontSize: 11, cursor: "pointer" } }, copied ? "Copied!" : "👤 " + user
+                            .id.slice(0, 10) + "..."),
+                        h(SyncBtn, { onSync: async () => await load() }),
+                        h(Btn, { onClick: onLogout, bg: "#27272A", style: { padding: "5px 12px",
+                                fontSize: 12 } }, "Logout")
+                    )
+                ),
+                h("div", { style: { maxWidth: 480, margin: "0 auto", padding: "20px 14px",
+                        display: "flex", flexDirection: "column", gap: 14 } },
+                    toast && h("div", { style: { background: toast.ok ? "#16a34a33" : "#dc262633",
+                            border: "1px solid " + (toast.ok ? "#16a34a" : "#dc2626"), borderRadius: 10,
+                            padding: "11px 16px", color: toast.ok ? "#4ade80" : "#f87171",
+                            textAlign: "center", fontWeight: 600 } }, toast.msg),
+                    h(Card, { style: { textAlign: "center" } },
+                        h("div", { style: { color: SUB, fontSize: 12, marginBottom: 4 } },
+                            dateStr),
+                        h("div", { style: { color: TEXT, fontSize: 34, fontWeight: 800 } },
+                            timeStr),
+                        clocked && h("div", { style: { marginTop: 8, display: "inline-flex",
+                                alignItems: "center", gap: 6, background: "#16a34a22",
+                                border: "1px solid #16a34a44", borderRadius: 20,
+                                padding: "3px 12px", color: "#4ade80", fontSize: 12,
+                                fontWeight: 600 } },
+                            h("span", { style: { width: 6, height: 6, background: "#4ade80",
+                                    borderRadius: "50%", display: "inline-block" } }),
+                            " Clocked In"
+                        )
+                    ),
+                    forgot && h("div", { style: { background: "#ca8a0422", border: "1px solid #ca8a0444",
+                            borderRadius: 10, padding: "11px 14px" } },
+                        h("div", { style: { color: "#fbbf24", fontWeight: 700, fontSize: 13 } },
+                            "⚠ Missed Time Out"),
+                        h("div", { style: { color: "#fbbf2499", fontSize: 12, marginTop: 3 } },
+                            "Previous day not closed — you can clock in again.")
+                    ),
+                    h(Card, null,
+                        h("div", { style: { display: "flex", justifyContent: "space-between",
+                                alignItems: "center", marginBottom: 12 } },
+                            h("span", { style: { color: TEXT, fontWeight: 700, fontSize: 15 } },
+                                "Attendance"),
+                            h("span", { style: { background: clocked ? "#16a34a22" : "#27272A",
+                                    color: clocked ? "#4ade80" : SUB, border: "1px solid " + (
+                                        clocked ? "#16a34a44" : BORDER), borderRadius: 20,
+                                    padding: "2px 10px", fontSize: 12, fontWeight: 600 } },
+                                clocked ? "Clocked In" : "Not Clocked In")
+                        ),
+                        clocked && latest && h("div", { style: { background: "#16a34a11",
+                                border: "1px solid #16a34a33", borderRadius: 8,
+                                padding: "9px 12px", marginBottom: 12 } },
+                            h("div", { style: { display: "flex", alignItems: "center",
+                                    gap: 8, marginBottom: 8 } },
+                                h("span", { style: { fontSize: 16 } }, "⏰"),
+                                h("div", null,
+                                    h("div", { style: { color: "#4ade8099",
+                                            fontSize: 11 } },
+                                        "Clocked in at"),
+                                    h("div", { style: { color: "#4ade80",
+                                            fontWeight: 700, fontSize: 13 } },
+                                        fmtT(latest.time_in))
+                                )
+                            ),
+                            h("div", { style: { display: "flex", alignItems: "center",
+                                    gap: 7, background: "#F9731611",
+                                    border: "1px solid #F9731633", borderRadius: 6,
+                                    padding: "7px 10px", marginBottom: 6 } },
+                                h("span", { style: { width: 7, height: 7,
+                                        background: gpsDot, borderRadius: "50%",
+                                        display: "inline-block",
+                                    flexShrink: 0 } }),
+                                h("span", { style: { fontSize: 11, color: gpsColor,
+                                        fontWeight: 600, flex: 1 } },
+                                    gpsLabel),
+                                h("span", { style: { fontSize: 12, color: O,
+                                        fontWeight: 700 } }, trackKm
+                                    .toFixed(2) + " km")
+                            ),
+                            h("div", { style: { display: "flex",
+                                    justifyContent: "space-between",
+                                    alignItems: "center" } },
+                                h("span", { style: { fontSize: 11, color: MUTED } },
+                                    "📍 " + wpCount + " waypoint" + (wpCount !==
+                                        1 ? "s" : "") +
+                                    " recorded locally"),
+                                h("span", { style: { fontSize: 10,
+                                        color: MUTED } },
+                                    "uploads on Time Out")
+                            ),
+                            gpsStatus === "error" && h("div", { style: { marginTop: 6,
+                                    fontSize: 11, color: "#fbbf24",
+                                    background: "#ca8a0411",
+                                    border: "1px solid #ca8a0433",
+                                    borderRadius: 5, padding: "4px 8px" } },
+                                "⚠ Offline — waypoints buffered in device storage. Route will upload when you clock out."
+                            )
+                        ),
+                        sub && h("div", { style: { color: SUB, fontSize: 13,
+                                textAlign: "center", marginBottom: 10 } },
+                            "📡 Getting GPS & submitting..."),
+                        h("button", {
+                            disabled: sub,
+                            onClick: () => { setMode(clocked ? "out" : "in");
+                                setShowCam(true); },
+                            style: { width: "100%", padding: 13,
+                                borderRadius: 10, border: "none",
+                                fontSize: 15, fontWeight: 700,
+                                background: sub ? "#3f3f46" : clocked ?
+                                    "#dc2626" : O,
+                                color: sub ? MUTED : "#fff", cursor: sub ?
+                                    "not-allowed" : "pointer" }
+                        }, sub ? "Processing..." : clocked ?
+                            "🔴 Time Out" : "🟢 Time In"
+                        ),
+                        h("div", { style: { color: MUTED, fontSize: 11,
+                                textAlign: "center", marginTop: 8 } },
+                            "📷 Selfie + GPS required")
+                    ),
+                    h(Card, null,
+                        h("div", { style: { color: TEXT, fontWeight: 700, fontSize: 15,
+                                marginBottom: 12 } }, "My Recent Logs"),
+                        logs.length === 0 ?
+                        h("div", { style: { color: MUTED, textAlign: "center",
+                                padding: "16px 0", fontSize: 13 } },
+                            "No logs yet. Start by clocking in!") :
+                        logs.slice(0, 10).map((l, i) => {
+                            const missed = !l.time_out && !sameDay(l.time_in, now);
+                            return h("div", { key: l.id, style: { border: "1px solid " +
+                                    BORDER, borderRadius: 10, padding: 10,
+                                    marginBottom: i < logs.length - 1 ? 8 : 0,
+                                    display: "flex", gap: 10 } },
+                                l.blob_id && h("img", { src: l.blob_id,
+                                    alt: "s", style: { width: 44,
+                                        height: 44, borderRadius: 8,
+                                        objectFit: "cover",
+                                    flexShrink: 0 },
+                                    onError: e => e.target.style
+                                        .display = "none" }),
+                                h("div", { style: { flex: 1, minWidth: 0 } },
+                                    h("div", { style: { display: "flex",
+                                            justifyContent: "space-between",
+                                            marginBottom: 3 } },
+                                        h("span", { style: { color: SUB,
+                                                fontSize: 11 } }, fmtD(
+                                            l.time_in)),
+                                        h("span", { style: { background: missed ?
+                                                    "#ca8a0422" : l
+                                                    .time_out ?
+                                                    "#27272A" :
+                                                    "#16a34a22",
+                                                color: missed ?
+                                                    "#fbbf24" : l
+                                                .time_out ? SUB :
+                                                    "#4ade80",
+                                                border: "1px solid " + (
+                                                    missed ?
+                                                    "#ca8a0444" :
+                                                    l.time_out ?
+                                                    BORDER :
+                                                    "#16a34a44"
+                                                    ),
+                                                borderRadius: 20,
+                                                padding: "1px 8px",
+                                                fontSize: 11,
+                                                fontWeight: 600 } },
+                                            missed ? "Missed" : l
+                                            .time_out ? "Done" :
+                                            "Active")
+                                    ),
+                                    h("div", { style: { display: "grid",
+                                            gridTemplateColumns: "1fr 1fr",
+                                            gap: 2, fontSize: 11 } },
+                                        h("div", null, h("span", { style: { color: MUTED } },
+                                            "In: "), h("span", { style: { color: TEXT,
+                                                    fontWeight: 600 } },
+                                            fmtT(l.time_in))),
+                                        l.time_out && h("div", null, h("span", { style: { color: MUTED } },
+                                            "Out: "), h("span", { style: { color: TEXT,
+                                                    fontWeight: 600 } },
+                                            fmtT(l.time_out))),
+                                        l.time_out && h("div", { style: { color: O,
+                                                fontWeight: 600 } }, fmtDur(
+                                            l.time_in, l.time_out))
+                                    ),
+                                    h("div", { style: { color: MUTED,
+                                            fontSize: 10, marginTop: 2 } },
+                                        "📍 " + l.lat?.toFixed(4) +
+                                        ", " + l.lon?.toFixed(4))
+                                )
+                            );
+                        })
+                    )
+                ),
+                h(SelfieModal, { isOpen: showCam, title: mode === "in" ? "Time In — Take Selfie" :
+                        "Time Out — Take Selfie", onCapture: cap, onCancel: () => setShowCam(false) })
+            );
+        }
+
+        // ── Route Tab ─────────────────────────────────────────────────────────────────
+        function RouteTab({ routeLogs, users }) {
+            const [period, setPeriod] = useState("daily");
+            const [rDate, setRDate] = useState(new Date().toISOString().slice(0, 10));
+            const [rUser, setRUser] = useState("");
+            const [snapping, setSnapping] = useState(false);
+            const [snapStats, setSnapStats] = useState({});
+            const rMapRef = useRef(),
+                rMapObj = useRef();
+
+            const getRange = () => {
+                const base = rDate ? new Date(rDate) : new Date();
+                if (period === "daily") { const d = base.toISOString().slice(0, 10); return { from: d, to: d }; }
+                if (period === "weekly") {
+                    const day = base.getDay(),
+                        mon = new Date(base);
+                    mon.setDate(base.getDate() - (day === 0 ? 6 : day - 1));
+                    const sun = new Date(mon);
+                    sun.setDate(mon.getDate() + 6);
+                    return { from: mon.toISOString().slice(0, 10), to: sun.toISOString().slice(0, 10) };
+                }
+                const y = base.getFullYear(),
+                    m = base.getMonth();
+                return { from: new Date(y, m, 1).toISOString().slice(0, 10), to: new Date(y, m + 1, 0).toISOString()
+                        .slice(0, 10) };
+            };
+            const { from, to } = getRange();
+            const filtered = routeLogs.filter(r => {
+                if (rUser && r.user_id !== rUser) return false;
+                if (r.date < from || r.date > to) return false;
+                return true;
+            });
+            const agentColors = ["#F97316", "#3b82f6", "#22c55e", "#a855f7", "#ec4899", "#14b8a6", "#f59e0b",
+                "#06b6d4"
+            ];
+            const agentColorMap = {};
+            users.forEach((u, i) => agentColorMap[u.id] = agentColors[i % agentColors.length]);
+            const summary = users.map(u => {
+                const ul = filtered.filter(r => r.user_id === u.id);
+                const km = ul.reduce((s, r) => s + (r.total_km || 0), 0);
+                const days = [...new Set(ul.map(r => r.date))].length;
+                return { ...u, km: Math.round(km * 100) / 100, days, count: ul.length };
+            }).filter(u => u.count > 0);
+            const grandKm = Math.round(summary.reduce((s, u) => s + u.km, 0) * 100) / 100;
+            const periodLabel = period === "daily" ? rDate : period === "weekly" ? "Week of " + from : new Date(from)
+                .toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+            const routeCsv = () => {
+                const rows = [
+                    ["Agent", "User ID", "Date", "Waypoints", "Distance (km)", "Start Lat", "Start Lon",
+                        "End Lat", "End Lon"
+                    ],
+                    ...filtered.map(r => {
+                        const wps = r.waypoints || [];
+                        const s = wps[0] || {},
+                            e = wps[wps.length - 1] || {};
+                        return [r.display_name, r.user_id, r.date, wps.length, (r.total_km || 0)
+                            .toFixed(2), s.lat || "", s.lon || "", e.lat || "", e
+                            .lon || ""
+                        ];
+                    })
+                ];
+                const a = document.createElement("a");
+                a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(rows.map(r => r.join(","))
+                .join("\n"));
+                a.download = "bao-routes-" + from + (from !== to ? "-to-" + to : "") + ".csv";
+                a.click();
+            };
+
+            useEffect(() => {
+                setTimeout(async () => {
+                    if (!rMapRef.current) return;
+                    const L = window.L;
+                    if (!rMapObj.current) {
+                        const map = L.map(rMapRef.current).setView([12.88, 121.77], 6);
+                        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(
+                        map);
+                        rMapObj.current = map;
+                    }
+                    const map = rMapObj.current;
+                    map.eachLayer(layer => { if (!layer._url) map.removeLayer(layer); });
+                    if (filtered.length === 0) return;
+                    setSnapping(true);
+                    const allBounds = [];
+                    const newSnapStats = {};
+                    for (const r of filtered) {
+                        if (!r.waypoints || r.waypoints.length === 0) continue;
+                        const color = agentColorMap[r.user_id] || O;
+                        const u = users.find(x => x.id === r.user_id);
+                        const agentName = u?.display_name || r.user_id;
+                        let result;
+                        if (OSRM_CACHE[r.id]) {
+                            result = OSRM_CACHE[r.id];
+                        } else {
+                            result = await osrmMatchRoute(r.waypoints);
+                            OSRM_CACHE[r.id] = result;
+                        }
+                        const { pts, snapped } = result;
+                        newSnapStats[r.id] = snapped ? "snapped" : "raw";
+                        L.polyline(pts, { color: "#000000", weight: 8, opacity: 0.25 }).addTo(map);
+                        const line = L.polyline(pts, { color, weight: 5, opacity: 0.95 }).addTo(map);
+                        const snapBadge = snapped ?
+                            "<span style='color:#4ade80;font-size:10px'>✓ road-snapped</span>" :
+                            "<span style='color:#fbbf24;font-size:10px'>⚠ raw GPS</span>";
+                        line.bindPopup("<b>" + agentName + "</b><br/>" + r.date +
+                            "<br/>" + r.total_km + " km · " + pts.length + " pts" +
+                            "<br/>" + snapBadge);
+                        const mkIcon = (c, sz) => L.divIcon({
+                            html: '<div style="width:' + sz + 'px;height:' + sz +
+                                'px;background:' + c +
+                                ';border:2.5px solid #fff;border-radius:50%;box-shadow:0 0 5px rgba(0,0,0,.6)"></div>',
+                            className: "",
+                            iconAnchor: [sz / 2, sz / 2]
+                        });
+                        L.marker(pts[0], { icon: mkIcon("#22c55e", 14) }).addTo(map)
+                            .bindPopup("🟢 Start · " + agentName + "<br/>" + r.date);
+                        L.marker(pts[pts.length - 1], { icon: mkIcon("#ef4444", 14) }).addTo(map)
+                            .bindPopup("🔴 End · " + agentName + "<br/>" + r.date);
+                        allBounds.push(...pts);
+                    }
+                    setSnapStats(newSnapStats);
+                    setSnapping(false);
+                    if (allBounds.length > 1) map.fitBounds(allBounds, { padding: [40, 40] });
+                }, 300);
+            }, [filtered.length, rUser, rDate, period, routeLogs.length]);
+
+            const inp = { background: BG, border: "1px solid " + BORDER, borderRadius: 8, color: TEXT,
+                padding: "7px 10px", fontSize: 13 };
+            const pts = t => ({ padding: "5px 14px", borderRadius: 7, border: "none", cursor: "pointer",
+                fontWeight: 700, fontSize: 12, background: period === t ? O : "transparent",
+                color: period === t ? "#fff" : SUB });
+
+            const snappedCount = Object.values(snapStats).filter(v => v === "snapped").length;
+            const rawCount = Object.values(snapStats).filter(v => v === "raw").length;
+
+            return h("div", { style: { display: "flex", flexDirection: "column", gap: 12 } },
+                h(Card, null,
+                    h("div", { style: { display: "flex", flexWrap: "wrap", gap: 10,
+                            alignItems: "flex-end" } },
+                        h("div", null,
+                            h("div", { style: { color: SUB, fontSize: 11, marginBottom: 4 } },
+                                "Period"),
+                            h("div", { style: { display: "flex", background: BG,
+                                    border: "1px solid " + BORDER, borderRadius: 8,
+                                    overflow: "hidden" } },
+                                h("button", { style: pts("daily"), onClick: () =>
+                                        setPeriod("daily") }, "Daily"),
+                                h("button", { style: pts("weekly"), onClick: () =>
+                                        setPeriod("weekly") }, "Weekly"),
+                                h("button", { style: pts("monthly"), onClick: () =>
+                                        setPeriod("monthly") }, "Monthly")
+                            )
+                        ),
+                        h("div", null, h("div", { style: { color: SUB, fontSize: 11,
+                                marginBottom: 4 } }, "Date"), h("input", { type: "date",
+                                value: rDate, onChange: e => setRDate(e.target.value),
+                                style: inp })),
+                        h("div", null,
+                            h("div", { style: { color: SUB, fontSize: 11,
+                                    marginBottom: 4 } }, "Agent"),
+                            h("select", { value: rUser, onChange: e => setRUser(e.target
+                                    .value), style: inp },
+                                h("option", { value: "" }, "All agents"),
+                                ...users.map(u => h("option", { key: u.id, value: u
+                                        .id }, u.display_name))
+                            )
+                        ),
+                        h(Btn, { onClick: routeCsv, bg: "#27272A", style: { padding: "7px 12px",
+                                fontSize: 13, alignSelf: "flex-end" } }, "⬇ CSV")
+                    )
+                ),
+                users.length > 0 && h(Card, { style: { padding: "10px 14px" } },
+                    h("div", { style: { display: "flex", flexWrap: "wrap", gap: 12,
+                            alignItems: "center", justifyContent: "space-between" } },
+                        h("div", { style: { display: "flex", flexWrap: "wrap", gap: 12,
+                                alignItems: "center" } },
+                            h("span", { style: { color: SUB, fontSize: 11,
+                                    fontWeight: 600 } }, "ROUTE COLORS:"),
+                            ...users.map(u => h("div", { key: u.id, style: { display: "flex",
+                                        alignItems: "center", gap: 5 } },
+                                h("div", { style: { width: 22, height: 4,
+                                        background: agentColorMap[u.id] || O,
+                                        borderRadius: 2 } }),
+                                h("span", { style: { color: TEXT, fontSize: 12 } },
+                                    u.display_name)
+                            ))
+                        ),
+                        (snappedCount > 0 || rawCount > 0) && h("div", { style: { display: "flex",
+                                gap: 6, alignItems: "center", flexWrap: "wrap" } },
+                            snapping && h("span", { style: { color: SUB, fontSize: 11,
+                                    display: "flex", alignItems: "center",
+                                    gap: 4 } },
+                                h("span", { className: "spin", style: { fontSize: 12 } },
+                                    "⟳"), " Snapping to roads..."
+                            ),
+                            !snapping && snappedCount > 0 && h("span", { style: { background: "#16a34a22",
+                                    border: "1px solid #16a34a44",
+                                    borderRadius: 20, padding: "2px 9px",
+                                    color: "#4ade80", fontSize: 11,
+                                    fontWeight: 600 } },
+                                "✓ " + snappedCount + " road-snapped"
+                            ),
+                            !snapping && rawCount > 0 && h("span", { style: { background: "#ca8a0422",
+                                    border: "1px solid #ca8a0444",
+                                    borderRadius: 20, padding: "2px 9px",
+                                    color: "#fbbf24", fontSize: 11,
+                                    fontWeight: 600 } },
+                                "⚠ " + rawCount + " raw GPS"
+                            )
+                        )
+                    )
+                ),
+                summary.length > 0 && h("div", { style: { display: "grid",
+                        gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))",
+                        gap: 10 } },
+                    ...summary.map(u => h(Card, { key: u.id, style: { padding: "12px 14px",
+                            borderLeft: "3px solid " + (agentColorMap[u.id] || O) } },
+                        h("div", { style: { color: SUB, fontSize: 10,
+                                textTransform: "uppercase", letterSpacing: 1,
+                                marginBottom: 3 } }, "Agent"),
+                        h("div", { style: { color: TEXT, fontWeight: 700,
+                                fontSize: 13, marginBottom: 6 } }, u
+                            .display_name),
+                        h("div", { style: { color: agentColorMap[u.id] || O,
+                                fontSize: 22, fontWeight: 800, lineHeight: 1 } },
+                            u.km.toFixed(2)),
+                        h("div", { style: { color: MUTED, fontSize: 11,
+                                marginTop: 2 } }, "km · " + u.days + " day" + (
+                                u.days !== 1 ? "s" : ""))
+                    )),
+                    h(Card, { style: { padding: "12px 14px", border: "1px solid " +
+                                O + "44", background: "#F9731608" } },
+                        h("div", { style: { color: SUB, fontSize: 10,
+                                textTransform: "uppercase", letterSpacing: 1,
+                                marginBottom: 3 } }, "Total"),
+                        h("div", { style: { color: TEXT, fontWeight: 700,
+                                fontSize: 13, marginBottom: 6 } },
+                            periodLabel),
+                        h("div", { style: { color: O, fontSize: 22, fontWeight: 800,
+                                lineHeight: 1 } }, grandKm.toFixed(2)),
+                        h("div", { style: { color: MUTED, fontSize: 11,
+                                marginTop: 2 } }, "km combined")
+                    )
+                ),
+                h(Card, { style: { padding: 0, overflow: "hidden" } },
+                    h("div", { ref: rMapRef, style: { width: "100%", height: 480 } }),
+                    h("div", { style: { padding: "8px 14px", display: "flex", gap: 14,
+                            fontSize: 12, color: SUB, flexWrap: "wrap",
+                            alignItems: "center" } },
+                        h("span", null, "🟢 Start"),
+                        h("span", null, "🔴 End"),
+                        h("span", null, "— Colored by agent"),
+                        h("span", { style: { color: "#4ade80", fontSize: 11 } },
+                            "✓ Routes follow actual roads via OSRM"),
+                        h("span", { style: { marginLeft: "auto" } }, filtered
+                            .length + " route" + (filtered.length !== 1 ? "s" :
+                                "") + " shown")
+                    )
+                ),
+                h("div", { style: { background: "#3b82f611", border: "1px solid #3b82f633",
+                        borderRadius: 10, padding: "10px 14px", fontSize: 12,
+                        color: "#93c5fd" } },
+                    h("span", { style: { fontWeight: 700 } }, "🗺 Road Snapping: "),
+                    "Routes are automatically aligned to actual roads using OSRM map matching. If OSRM is unavailable, raw GPS lines are shown with a ⚠ warning. Snapped routes are cached per session — reload to re-fetch."
+                ),
+                filtered.length > 0 && h(Card, { style: { padding: 0, overflowX: "auto" } },
+                    h("table", { style: { width: "100%", fontSize: 12 } },
+                        h("thead", null, h("tr", { style: { borderBottom: "1px solid " +
+                                BORDER } },
+                            ["", "Agent", "Date", "Waypoints", "Distance",
+                                "Snapped"
+                            ].map(x => h("th", { key: x, style: { color: SUB,
+                                    fontWeight: 600, padding: "10px 12px",
+                                    textAlign: "left",
+                                    whiteSpace: "nowrap" } }, x))
+                        )),
+                        h("tbody", null, ...filtered.map((r, i) => h("tr", { key: r
+                                .id, style: { borderBottom: i < filtered
+                                    .length - 1 ? "1px solid " + BORDER :
+                                    "none", background: i % 2 ?
+                                    "#ffffff04" : "transparent" } },
+                                h("td", { style: { padding: "8px 8px 8px 12px" } },
+                                    h("div", { style: { width: 14, height: 14,
+                                            borderRadius: "50%",
+                                            background: agentColorMap[r
+                                                .user_id] || O } })),
+                                h("td", { style: { padding: "8px 12px",
+                                        color: TEXT, fontWeight: 600 } },
+                                    r.display_name),
+                                h("td", { style: { padding: "8px 12px",
+                                        color: SUB } }, r.date),
+                                h("td", { style: { padding: "8px 12px",
+                                        color: MUTED } }, (r.waypoints
+                                    ?.length || 0) + " pts"),
+                                h("td", { style: { padding: "8px 12px",
+                                        color: agentColorMap[r.user_id] ||
+                                        O, fontWeight: 700 } }, (r
+                                    .total_km || 0).toFixed(2) +
+                                    " km"),
+                                h("td", { style: { padding: "8px 12px" } },
+                                    snapStats[r.id] === "snapped" ?
+                                    h("span", { style: { color: "#4ade80",
+                                            fontSize: 11,
+                                            fontWeight: 600 } },
+                                        "✓ road") :
+                                    snapStats[r.id] === "raw" ?
+                                    h("span", { style: { color: "#fbbf24",
+                                            fontSize: 11,
+                                            fontWeight: 600 } },
+                                        "⚠ raw") :
+                                    h("span", { style: { color: MUTED,
+                                            fontSize: 11 } }, "—")
+                                )
+                            ))
+                        )
+                    )
+                ),
+                filtered.length === 0 && h(Card, { style: { textAlign: "center",
+                        padding: "36px 20px" } },
+                    h("div", { style: { fontSize: 30, marginBottom: 10 } }, "📍"),
+                    h("div", { style: { color: TEXT, fontWeight: 600, marginBottom: 5 } },
+                        "No route data yet"),
+                    h("div", { style: { color: MUTED, fontSize: 13 } },
+                        "Routes are recorded automatically when agents clock in and out.")
+                )
+            );
+        }
+
+        // ── Admin Dashboard ───────────────────────────────────────────────────────────
+        function AdminDash({ user, onLogout }) {
+            const [tab, setTab] = useState("logs"),
+                [logs, setLogs] = useState([]),
+                [users, setUsers] = useState([]),
+                [homes, setHomes] = useState([]),
+                [routeLogs, setRouteLogs] = useState([]);
+            const [fUser, setFUser] = useState(""),
+                [fFrom, setFFrom] = useState(""),
+                [fTo, setFTo] = useState("");
+            const [toast, setToast] = useState(null),
+                [nu, setNu] = useState({ id: "", display_name: "", pin: "", role: "agent" }),
+                [adding, setAdding] = useState(false);
+            const [editLog, setEditLog] = useState(null);
+            const [mfUser, setMfUser] = useState(""),
+                [mfFrom, setMfFrom] = useState(""),
+                [mfTo, setMfTo] = useState(""),
+                [mfType, setMfType] = useState("all");
+            const [mapReady, setMapReady] = useState(false);
+            const mapRef = useRef(),
+                mapObj = useRef(),
+                markersLayerRef = useRef();
+
+            // ── Pagination state ──────────────────────────────────────────────────────
+            const [currentPage, setCurrentPage] = useState(1);
+            const ITEMS_PER_PAGE = 100;
+
+            const toast2 = (msg, ok) => { ok = ok === undefined ? true : ok;
+                setToast({ msg, ok });
+                setTimeout(() => setToast(null), 3000); };
+            useEffect(() => { loadAll(); }, []);
+            const loadAll = async () => {
+                const [{ data: l }, { data: u }, { data: hh }, { data: r }] = await Promise.all([
+                    sb.from("time_logs").select("*").order("time_in", { ascending: false }),
+                    sb.from("users").select("*").order("display_name"),
+                    sb.from("home_locations").select("*"),
+                    sb.from("route_logs").select("*").order("date", { ascending: false })
+                ]);
+                setLogs(l || []);
+                setUsers(u || []);
+                setHomes(hh || []);
+                setRouteLogs(r || []);
+                setCurrentPage(1);
+            };
+            const handleSync = async () => { await loadAll();
+                toast2("Data synced ✓"); };
+            useEffect(() => {
+                if (tab !== "map") return;
+                setTimeout(() => {
+                    if (!mapRef.current || mapObj.current) return;
+                    const L = window.L,
+                        map = L.map(mapRef.current).setView([12.88, 121.77], 6);
+                    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+                    mapObj.current = map;
+                    const layer = L.layerGroup().addTo(map);
+                    markersLayerRef.current = layer;
+                    setMapReady(true);
+                }, 300);
+            }, [tab]);
+            useEffect(() => {
+                if (!mapReady || !mapObj.current || !markersLayerRef.current) return;
+                const L = window.L,
+                    layer = markersLayerRef.current,
+                    map = mapObj.current;
+                layer.clearLayers();
+                const pin = (lat, lon, color, popup) => { const ic = L.divIcon({ html: '<div style="width:13px;height:13px;background:' +
+                            color + ';border:2px solid #fff;border-radius:50%"></div>',
+                        className: "", iconAnchor: [6, 6] });
+                    L.marker([lat, lon], { icon: ic }).bindPopup(popup).addTo(layer); };
+                const filteredLogs = logs.filter(l => {
+                    if (mfUser && l.user_id !== mfUser) return false;
+                    if (mfFrom && new Date(l.time_in) < new Date(mfFrom)) return false;
+                    if (mfTo && new Date(l.time_in) > new Date(mfTo + "T23:59:59")) return false;
+                    return true;
+                });
+                const filteredHomes = homes.filter(hh => !mfUser || hh.user_id === mfUser);
+                if (mfType === "all" || mfType === "home") { filteredHomes.forEach(hh => { const u = users
+                            .find(x => x.id === hh.user_id);
+                        pin(hh.lat, hh.lon, "#3b82f6", "<b>🏠 Home</b><br/>" + (u?.display_name || hh
+                            .user_id)); }); }
+                if (mfType === "all" || mfType === "timein") { filteredLogs.forEach(l => { if (l.lat && l
+                            .lon) pin(l.lat, l.lon, "#22c55e",
+                            '<div style="text-align:center"><b>🟢 Time In</b><br/>' + l.display_name +
+                            '<br/><small>' + fmtD(l.time_in) + " " + fmtT(l.time_in) +
+                            '</small>' + (l.blob_id ?
+                                '<br/><img src="' + l.blob_id +
+                                '" style="width:70px;height:70px;object-fit:cover;border-radius:5px;margin-top:4px"/>'
+                                : "") + '</div>'); }); }
+                if (mfType === "all" || mfType === "timeout") { filteredLogs.forEach(l => { if (l
+                            .timeout_lat && l.timeout_lon) pin(l.timeout_lat, l.timeout_lon,
+                            "#ef4444",
+                            '<div style="text-align:center"><b>🔴 Time Out</b><br/>' + l
+                            .display_name + '<br/><small>' + fmtD(l.time_out) + " " + fmtT(l
+                                .time_out) + '</small>' + (l.timeout_blob_id ?
+                                '<br/><img src="' + l.timeout_blob_id +
+                                '" style="width:70px;height:70px;object-fit:cover;border-radius:5px;margin-top:4px"/>'
+                                : "") + '</div>'); }); }
+                const pts = [];
+                if (mfType === "all" || mfType === "home") filteredHomes.forEach(hh => pts.push([hh.lat,
+                    hh.lon
+                ]));
+                if (mfType === "all" || mfType === "timein") filteredLogs.filter(l => l.lat).forEach(l =>
+                    pts.push([l.lat, l.lon]));
+                if (mfType === "all" || mfType === "timeout") filteredLogs.filter(l => l.timeout_lat)
+                    .forEach(l => pts.push([l.timeout_lat, l.timeout_lon]));
+                if (pts.length > 1) map.fitBounds(pts, { padding: [30, 30] });
+            }, [mapReady, mfUser, mfFrom, mfTo, mfType, logs, homes, users]);
+
+            // ── Filtered logs with pagination ────────────────────────────────────────
+            const filtered = logs.filter(l => {
+                if (fUser && l.user_id !== fUser) return false;
+                if (fFrom && new Date(l.time_in) < new Date(fFrom)) return false;
+                if (fTo && new Date(l.time_in) > new Date(fTo + "T23:59:59")) return false;
+                return true;
+            });
+
+            // Reset page when filters change
+            useEffect(() => { setCurrentPage(1); }, [fUser, fFrom, fTo]);
+
+            const totalPages = Math.ceil(filtered.length / ITEMS_PER_PAGE);
+            const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+            const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, filtered.length);
+            const paginatedLogs = filtered.slice(startIndex, endIndex);
+
+            const goToPage = (page) => { if (page >= 1 && page <= totalPages) setCurrentPage(page); };
+
+            const csv = () => {
+                const rows = [
+                    ["Name", "Date", "Time In", "Time Out", "Duration", "Lat", "Lon"],
+                    ...filtered.map(l => [l.display_name, fmtD(l.time_in), fmtT(l.time_in), fmtT(l
+                        .time_out), fmtDur(l.time_in, l.time_out), l.lat, l.lon])
+                ];
+                const a = document.createElement("a");
+                a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(rows.map(r => r.join(","))
+                    .join("\n"));
+                a.download = "bao-logs.csv";
+                a.click();
+            };
+
+            const delLog = async id => {
+                if (!confirm("Delete this log entry? This cannot be undone.")) return;
+                const { error } = await sb.from("time_logs").delete().eq("id", id);
+                if (error) { toast2(error.message, false); return; }
+                toast2("Log deleted.");
+                loadAll();
+            };
+
+            const saveEditLog = async updates => {
+                const { error } = await sb.from("time_logs").update({ time_in: updates.time_in,
+                    time_out: updates.time_out }).eq("id", editLog.id);
+                if (error) { toast2(error.message, false); return; }
+                setEditLog(null);
+                toast2("Log updated! ✓");
+                loadAll();
+            };
+
+            // ── Add Log on behalf of agent ──────────────────────────────────────────
+            const [showAddLog, setShowAddLog] = useState(false);
+
+            const handleAddLog = async (data) => {
+                const agent = users.find(u => u.id === data.user_id);
+                if (!agent) throw new Error("Agent not found.");
+                const id = data.user_id + "-" + Date.now();
+                const { error } = await sb.from("time_logs").insert({
+                    id,
+                    user_id: data.user_id,
+                    display_name: agent.display_name,
+                    time_in: data.time_in,
+                    time_out: data.time_out,
+                    lat: data.lat,
+                    lon: data.lon,
+                    blob_id: null,
+                    timeout_blob_id: null,
+                    timeout_lat: null,
+                    timeout_lon: null
+                });
+                if (error) throw error;
+                toast2("Log added for " + agent.display_name + " ✓");
+                setShowAddLog(false);
+                loadAll();
+            };
+
+            const promote = async id => { await sb.from("users").update({ role: "admin" }).eq("id", id);
+                toast2("Promoted!");
+                loadAll(); };
+            const demote = async id => { if (id === "admin") { toast2("Cannot demote main admin.",
+                    false); return; } await sb.from("users").update({ role: "agent" }).eq("id", id);
+                toast2("Demoted.");
+                loadAll(); };
+            const del = async id => { if (id === "admin") { toast2("Cannot delete main admin.",
+                    false); return; } if (!confirm('Delete "' + id + '"?')) return; await sb.from("users")
+                    .delete().eq("id", id);
+                toast2("Deleted.");
+                loadAll(); };
+            const add = async () => {
+                if (!nu.id || !nu.display_name || !nu.pin) { toast2("Fill all fields.", false); return; }
+                setAdding(true);
+                const h2 = await hashPin(nu.pin);
+                const { error } = await sb.from("users").insert({ id: nu.id.toLowerCase().trim(),
+                    display_name: nu.display_name, role: nu.role, pin_hash: h2 });
+                if (error) { toast2(error.message, false); } else { toast2("User added!");
+                    setNu({ id: "", display_name: "", pin: "", role: "agent" });
+                    loadAll(); }
+                setAdding(false);
+            };
+            const ts = t => ({ padding: "7px 14px", borderRadius: 8, border: "none", cursor: "pointer",
+                fontWeight: 700, fontSize: 13, background: tab === t ? O : "transparent",
+                color: tab === t ? "#fff" : SUB });
+            const mts = t => ({ padding: "5px 12px", borderRadius: 7, border: "none", cursor: "pointer",
+                fontWeight: 700, fontSize: 12, background: mfType === t ? O : "transparent",
+                color: mfType === t ? "#fff" : SUB });
+            const inp = { background: BG, border: "1px solid " + BORDER, borderRadius: 8, color: TEXT,
+                padding: "7px 10px", fontSize: 13 };
+
+            return h("div", { style: { minHeight: "100vh", background: BG, paddingBottom: 40 } },
+                h("header", { style: { background: CARD, borderBottom: "1px solid " + BORDER,
+                        padding: "0 16px", height: 54, display: "flex", alignItems: "center",
+                        justifyContent: "space-between" } },
+                    h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                        h("div", { style: { width: 30, height: 30, background: O, borderRadius: 8,
+                                display: "flex", alignItems: "center",
+                                justifyContent: "center", fontWeight: 800, color: "#fff",
+                                fontSize: 13 } }, "B"),
+                        h("span", { style: { color: TEXT, fontWeight: 700, fontSize: 14 } },
+                            "BAO Admin")
+                    ),
+                    h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+                        h(SyncBtn, { onSync: handleSync }),
+                        h(Btn, { onClick: onLogout, bg: "#27272A", style: { padding: "5px 12px",
+                                fontSize: 12 } }, "Logout")
+                    )
+                ),
+                h("div", { style: { maxWidth: 900, margin: "0 auto", padding: "18px 14px" } },
+                    toast && h("div", { style: { background: toast.ok ? "#16a34a33" : "#dc262633",
+                            border: "1px solid " + (toast.ok ? "#16a34a" : "#dc2626"),
+                            borderRadius: 10, padding: "10px 16px", color: toast.ok ?
+                                "#4ade80" : "#f87171", textAlign: "center",
+                            fontWeight: 600, marginBottom: 14 } }, toast.msg),
+                    h("div", { style: { display: "flex", gap: 4, marginBottom: 18,
+                            background: CARD, border: "1px solid " + BORDER,
+                            borderRadius: 10, padding: 5, width: "fit-content" } },
+                        h("button", { style: ts("map"), onClick: () => setTab("map") },
+                            "🗺 Map"),
+                        h("button", { style: ts("logs"), onClick: () => setTab("logs") },
+                            "📋 Logs"),
+                        h("button", { style: ts("route"), onClick: () => setTab("route") },
+                            "📍 Route"),
+                        h("button", { style: ts("users"), onClick: () => setTab("users") },
+                            "👥 Users")
+                    ),
+                    tab === "map" && h("div", { style: { display: "flex", flexDirection: "column",
+                            gap: 12 } },
+                        h(Card, null,
+                            h("div", { style: { display: "flex", flexWrap: "wrap",
+                                    gap: 10, alignItems: "flex-end" } },
+                                h("div", null, h("div", { style: { color: SUB,
+                                        fontSize: 11, marginBottom: 4 } },
+                                    "Agent"), h("select", { value: mfUser,
+                                        onChange: e => setMfUser(e.target
+                                            .value), style: inp },
+                                    h("option", { value: "" },
+                                        "All agents"),
+                                    ...users.map(u => h("option", { key: u
+                                            .id, value: u.id }, u
+                                        .display_name))
+                                    )),
+                                h("div", null, h("div", { style: { color: SUB,
+                                        fontSize: 11, marginBottom: 4 } },
+                                    "From"), h("input", { type: "date",
+                                        value: mfFrom, onChange: e =>
+                                            setMfFrom(e.target.value),
+                                        style: inp })),
+                                h("div", null, h("div", { style: { color: SUB,
+                                        fontSize: 11, marginBottom: 4 } },
+                                    "To"), h("input", { type: "date",
+                                        value: mfTo, onChange: e =>
+                                            setMfTo(e.target.value),
+                                        style: inp })),
+                                h("div", null,
+                                    h("div", { style: { color: SUB,
+                                            fontSize: 11,
+                                            marginBottom: 4 } },
+                                        "Pin Type"),
+                                    h("div", { style: { display: "flex",
+                                            gap: 3, background: "#09090B",
+                                            border: "1px solid " +
+                                            BORDER, borderRadius: 8,
+                                            padding: 3 } },
+                                        h("button", { style: mts(
+                                                "all"),
+                                            onClick: () =>
+                                                setMfType(
+                                                "all") },
+                                            "All"),
+                                        h("button", { style: mts(
+                                                "timein"),
+                                            onClick: () =>
+                                                setMfType(
+                                                "timein") },
+                                            "🟢 In"),
+                                        h("button", { style: mts(
+                                                "timeout"),
+                                            onClick: () =>
+                                                setMfType(
+                                                "timeout") },
+                                            "🔴 Out"),
+                                        h("button", { style: mts(
+                                                "home"),
+                                            onClick: () =>
+                                                setMfType(
+                                                "home") },
+                                            "🔵 Home")
+                                    )
+                                ),
+                                (mfUser || mfFrom || mfTo || mfType !==
+                                    "all") && h(Btn, { onClick: () => { setMfUser(
+                                            ""); setMfFrom(""); setMfTo(
+                                            ""); setMfType("all"); },
+                                        bg: "#27272A", style: { padding: "7px 12px",
+                                            fontSize: 12,
+                                            alignSelf: "flex-end" } },
+                                    "✕ Clear")
+                            )
+                        ),
+                        h(Card, { style: { padding: 0, overflow: "hidden" } },
+                            h("div", { ref: mapRef, style: { width: "100%",
+                                    height: 460 } }),
+                            h("div", { style: { padding: "8px 14px",
+                                    display: "flex", gap: 14, fontSize: 12,
+                                    color: SUB } },
+                                h("span", null, "🔵 Home"),
+                                h("span", null, "🟢 Time In"),
+                                h("span", null, "🔴 Time Out"),
+                                h("span", { style: { marginLeft: "auto" } },
+                                    "Click pins for details & photos")
+                            )
+                        )
+                    ),
+                    tab === "logs" && h("div", { style: { display: "flex",
+                            flexDirection: "column", gap: 12 } },
+                        h(Card, null,
+                            h("div", { style: { display: "flex", flexWrap: "wrap",
+                                    gap: 10, alignItems: "flex-end" } },
+                                h("div", null, h("div", { style: { color: SUB,
+                                        fontSize: 11, marginBottom: 4 } },
+                                    "Agent"), h("select", { value: fUser,
+                                        onChange: e => setFUser(e.target
+                                            .value), style: inp },
+                                    h("option", { value: "" },
+                                        "All agents"),
+                                    ...users.map(u => h("option", { key: u
+                                            .id, value: u.id }, u
+                                        .display_name))
+                                    )),
+                                h("div", null, h("div", { style: { color: SUB,
+                                        fontSize: 11, marginBottom: 4 } },
+                                    "From"), h("input", { type: "date",
+                                        value: fFrom, onChange: e =>
+                                            setFFrom(e.target.value),
+                                        style: inp })),
+                                h("div", null, h("div", { style: { color: SUB,
+                                        fontSize: 11, marginBottom: 4 } },
+                                    "To"), h("input", { type: "date",
+                                        value: fTo, onChange: e =>
+                                            setFTo(e.target.value),
+                                        style: inp })),
+                                h("div", { style: { display: "flex", gap: 8,
+                                        alignItems: "center",
+                                        flexWrap: "wrap" } },
+                                    h(Btn, { onClick: csv, bg: "#27272A",
+                                        style: { padding: "7px 12px",
+                                            fontSize: 13 } }, "⬇ CSV"),
+                                    h(Btn, { onClick: () => setShowAddLog(
+                                            true), bg: "#16a34a",
+                                        style: { padding: "7px 12px",
+                                            fontSize: 13 } },
+                                        "➕ Add Log"),
+                                    h("span", { style: { color: MUTED,
+                                            fontSize: 12 } },
+                                        filtered.length + " records" +
+                                        (totalPages > 1 ?
+                                            " (page " + currentPage +
+                                            " of " + totalPages +
+                                            ")" : "")
+                                    )
+                                )
+                            )
+                        ),
+                        h(Card, { style: { padding: 0, overflowX: "auto" } },
+                            h("table", { style: { width: "100%", fontSize: 12 } },
+                                h("thead", null, h("tr", { style: { borderBottom: "1px solid " +
+                                            BORDER } },
+                                    ["Photo", "Agent", "Date", "In", "Out",
+                                        "Duration", "GPS", "Actions"
+                                    ].map(x => h("th", { key: x, style: { color: SUB,
+                                            fontWeight: 600,
+                                            padding: "10px 12px",
+                                            textAlign: "left",
+                                            whiteSpace: "nowrap" } },
+                                        x))
+                                )),
+                                h("tbody", null, paginatedLogs.length ===
+                                    0 ?
+                                    h("tr", null, h("td", { colSpan: 8,
+                                            style: { color: MUTED,
+                                                textAlign: "center",
+                                                padding: 20 } },
+                                        "No logs found")) :
+                                    paginatedLogs.map((l, i) => h("tr", { key: l
+                                            .id, style: { borderBottom: i <
+                                                paginatedLogs.length -
+                                                1 ? "1px solid " +
+                                                BORDER : "none",
+                                                background: i % 2 ?
+                                                "#ffffff04" :
+                                                "transparent" } },
+                                        h("td", { style: { padding: "8px 12px" } },
+                                            l.blob_id && h("img", { src: l
+                                                    .blob_id,
+                                                style: { width: 36,
+                                                    height: 36,
+                                                    borderRadius: 6,
+                                                    objectFit: "cover" },
+                                                onError: e => e
+                                                    .target.style
+                                                    .display =
+                                                    "none" })
+                                        ),
+                                        h("td", { style: { padding: "8px 12px",
+                                                color: TEXT,
+                                                fontWeight: 600 } },
+                                            l.display_name),
+                                        h("td", { style: { padding: "8px 12px",
+                                                color: SUB } }, fmtD(l
+                                            .time_in)),
+                                        h("td", { style: { padding: "8px 12px",
+                                                color: "#4ade80" } },
+                                            fmtT(l.time_in)),
+                                        h("td", { style: { padding: "8px 12px",
+                                                color: l.time_out ?
+                                                "#f87171" : MUTED } },
+                                            fmtT(l.time_out)),
+                                        h("td", { style: { padding: "8px 12px",
+                                                color: O } }, fmtDur(l
+                                            .time_in, l.time_out)),
+                                        h("td", { style: { padding: "8px 12px",
+                                                color: MUTED,
+                                                fontSize: 11 } }, l.lat
+                                            ?.toFixed(3) + "," + l.lon
+                                            ?.toFixed(3)),
+                                        h("td", { style: { padding: "8px 12px" } },
+                                            h("div", { style: { display: "flex",
+                                                    gap: 5 } },
+                                                h("button", { onClick: () =>
+                                                        setEditLog(l),
+                                                    style: { background: "#27272A",
+                                                        color: "#fff",
+                                                        border: "none",
+                                                        borderRadius: 6,
+                                                        padding: "3px 8px",
+                                                        fontSize: 11,
+                                                        cursor: "pointer",
+                                                        fontWeight: 600 } },
+                                                    "✏ Edit"),
+                                                h("button", { onClick: () =>
+                                                        delLog(l.id),
+                                                    style: { background: "#dc2626",
+                                                        color: "#fff",
+                                                        border: "none",
+                                                        borderRadius: 6,
+                                                        padding: "3px 8px",
+                                                        fontSize: 11,
+                                                        cursor: "pointer",
+                                                        fontWeight: 600 } },
+                                                    "🗑 Del")
+                                            )
+                                        )
+                                    ))
+                                )
+                            )
+                        ),
+                        // ── Pagination controls ────────────────────────────────────
+                        totalPages > 1 && h("div", { style: { display: "flex",
+                                justifyContent: "center", alignItems: "center",
+                                gap: 6, flexWrap: "wrap", marginTop: 4 } },
+                            h("button", { onClick: () => goToPage(currentPage - 1),
+                                    disabled: currentPage === 1, style: { background: currentPage ===
+                                            1 ? "#27272A" : O, color: "#fff",
+                                        border: "none", borderRadius: 6,
+                                        padding: "6px 14px", fontSize: 13,
+                                        fontWeight: 600, cursor: currentPage ===
+                                            1 ? "not-allowed" : "pointer",
+                                        opacity: currentPage === 1 ? 0.5 : 1 } },
+                                "◀ Prev"),
+                            ...Array.from({ length: Math.min(7, totalPages) }, (
+                                _, idx) => {
+                                let pageNum;
+                                if (totalPages <= 7) {
+                                    pageNum = idx + 1;
+                                } else if (currentPage <= 4) {
+                                    pageNum = idx + 1;
+                                } else if (currentPage >= totalPages - 3) {
+                                    pageNum = totalPages - 6 + idx;
+                                } else {
+                                    pageNum = currentPage - 3 + idx;
+                                }
+                                if (pageNum < 1 || pageNum > totalPages)
+                                    return null;
+                                return h("button", { key: pageNum, onClick: () =>
+                                        goToPage(pageNum), style: { background: pageNum ===
+                                                currentPage ? O :
+                                                "transparent", color: pageNum ===
+                                                currentPage ? "#fff" : SUB,
+                                            border: "none", borderRadius: 6,
+                                            padding: "6px 12px", fontSize: 13,
+                                            fontWeight: 600, cursor: "pointer" } },
+                                    pageNum);
+                            }),
+                            h("button", { onClick: () => goToPage(currentPage + 1),
+                                    disabled: currentPage === totalPages, style: { background: currentPage ===
+                                            totalPages ? "#27272A" : O, color: "#fff",
+                                        border: "none", borderRadius: 6,
+                                        padding: "6px 14px", fontSize: 13,
+                                        fontWeight: 600, cursor: currentPage ===
+                                            totalPages ? "not-allowed" : "pointer",
+                                        opacity: currentPage === totalPages ? 0.5 :
+                                            1 } },
+                                "Next ▶")
+                        )
+                    ),
+                    tab === "route" && h(RouteTab, { routeLogs, users }),
+                    tab === "users" && h("div", { style: { display: "flex",
+                            flexDirection: "column", gap: 12 } },
+                        h(Card, null,
+                            h("div", { style: { color: TEXT, fontWeight: 700,
+                                    fontSize: 14, marginBottom: 12 } },
+                                "Add New User"),
+                            h("div", { style: { display: "flex",
+                                    flexWrap: "wrap", gap: 10,
+                                    alignItems: "flex-end" } },
+                                ...[["Username", "id", "juan.reyes"],
+                                    ["Full Name", "display_name",
+                                        "Juan Reyes"],
+                                    ["PIN", "pin", ""]
+                                ].map(([label, key, ph]) =>
+                                    h("div", { key: key }, h("div", { style: { color: SUB,
+                                                fontSize: 11,
+                                                marginBottom: 4 } },
+                                        label), h("input", { type: key ===
+                                                "pin" ? "password" :
+                                                "text",
+                                            placeholder: ph,
+                                            value: nu[key],
+                                            onChange: e =>
+                                                setNu(p =>
+                                                    Object.assign(
+                                                        {},
+                                                        p, { [key]: e
+                                                                .target
+                                                                .value }
+                                                    )
+                                                ),
+                                            style: Object.assign(
+                                                {}, inp, { width: 150 }
+                                                ) }))
+                                ),
+                                h("div", null, h("div", { style: { color: SUB,
+                                        fontSize: 11, marginBottom: 4 } },
+                                    "Role"), h("select", { value: nu
+                                        .role, onChange: e =>
+                                            setNu(p =>
+                                                Object.assign(
+                                                    {}, p, { role: e
+                                                            .target
+                                                            .value }
+                                                )
+                                            ),
+                                        style: inp },
+                                    h("option", { value: "agent" },
+                                        "Agent"),
+                                    h("option", { value: "admin" },
+                                        "Admin")
+                                    )),
+                                h(Btn, { onClick: add, disabled: adding,
+                                    style: { padding: "7px 14px",
+                                        fontSize: 13 } },
+                                    adding ? "Adding..." :
+                                    "Add User")
+                            )
+                        ),
+                        h(Card, { style: { padding: 0, overflowX: "auto" } },
+                            h("table", { style: { width: "100%",
+                                    fontSize: 13 } },
+                                h("thead", null, h("tr", { style: { borderBottom: "1px solid " +
+                                            BORDER } },
+                                    ["Username", "Name", "Role",
+                                        "Actions"
+                                    ].map(x => h("th", { key: x,
+                                        style: { color: SUB,
+                                            fontWeight: 600,
+                                            padding: "10px 14px",
+                                            textAlign: "left" } },
+                                        x))
+                                )),
+                                h("tbody", null, users.map((u, i) =>
+                                    h("tr", { key: u.id, style: { borderBottom: i <
+                                                users.length - 1 ?
+                                                "1px solid " +
+                                                BORDER :
+                                                "none" } },
+                                        h("td", { style: { padding: "9px 14px",
+                                                color: MUTED,
+                                                fontFamily: "monospace",
+                                                fontSize: 11 } },
+                                            u.id),
+                                        h("td", { style: { padding: "9px 14px",
+                                                color: TEXT,
+                                                fontWeight: 600 } },
+                                            u.display_name),
+                                        h("td", { style: { padding: "9px 14px" } },
+                                            h("span", { style: { background: u
+                                                        .role ===
+                                                    "admin" ?
+                                                    "#16a34a22" :
+                                                    "#27272A",
+                                                    color: u.role ===
+                                                    "admin" ?
+                                                    "#4ade80" :
+                                                    SUB,
+                                                    border: "1px solid " +
+                                                    (u.role ===
+                                                        "admin" ?
+                                                        "#16a34a44" :
+                                                        BORDER),
+                                                    borderRadius: 20,
+                                                    padding: "2px 10px",
+                                                    fontSize: 12,
+                                                    fontWeight: 600 } },
+                                                u.role === "admin" ?
+                                                "Admin" : "Agent"
+                                            )
+                                        ),
+                                        h("td", { style: { padding: "9px 14px" } },
+                                            h("div", { style: { display: "flex",
+                                                    gap: 6 } },
+                                                u.role !==
+                                                "admin" && h(
+                                                    Btn, { onClick: () =>
+                                                            promote(
+                                                                u.id
+                                                                ),
+                                                        bg: "#16a34a",
+                                                        style: { padding: "4px 10px",
+                                                            fontSize: 12 } },
+                                                    "Promote"
+                                                ),
+                                                u.role ===
+                                                "admin" && u
+                                                .id !==
+                                                "admin" &&
+                                                h(Btn, { onClick: () =>
+                                                        demote(
+                                                            u.id
+                                                            ),
+                                                    bg: "#ca8a04",
+                                                    style: { padding: "4px 10px",
+                                                        fontSize: 12 } },
+                                                    "Demote"
+                                                ),
+                                                u.id !==
+                                                "admin" && h(
+                                                    Btn, { onClick: () =>
+                                                            del(u
+                                                                .id),
+                                                        bg: "#dc2626",
+                                                        style: { padding: "4px 10px",
+                                                            fontSize: 12 } },
+                                                    "Delete"
+                                                )
+                                            )
+                                        )
+                                    )
+                                ))
+                            )
+                        )
+                    )
+                ),
+                h(EditLogModal, { isOpen: !!editLog, log: editLog, onSave: saveEditLog,
+                    onCancel: () => setEditLog(null) }),
+                h(AddLogModal, { isOpen: showAddLog, users: users, onSave: handleAddLog,
+                    onCancel: () => setShowAddLog(false) })
+            );
+        }
+
+        // ── Root ──────────────────────────────────────────────────────────────────────
+        function App() {
+            const [user, setUser] = useState(null),
+                [view, setView] = useState("login"),
+                [chk, setChk] = useState(false);
+            const login = async ud => {
+                setChk(true);
+                const { data } = await sb.from("home_locations").select("id").eq("user_id", ud.id)
+                    .maybeSingle();
+                setUser(ud);
+                if (ud.role === "admin") setView("admin");
+                else if (!data) setView("home");
+                else setView("agent");
+                setChk(false);
+            };
+            const logout = () => { setUser(null);
+                setView("login"); };
+            if (chk) return h("div", { style: { minHeight: "100vh", background: BG, display: "flex",
+                        alignItems: "center", justifyContent: "center", flexDirection: "column",
+                        gap: 14 } },
+                h("div", { style: { width: 52, height: 52, background: O, borderRadius: 13,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: 24, fontWeight: 800, color: "#fff" } }, "B"),
+                h("div", { style: { color: SUB, fontSize: 13 } },
+                    "Loading BAO Field Tracking...")
+            );
+            if (view === "login") return h(Login, { onLogin: login });
+            if (view === "home") return h(HomeLoc, { user, onDone: () => setView("agent") });
+            if (view === "agent") return h(AgentDash, { user, onLogout: logout });
+            if (view === "admin") return h(AdminDash, { user, onLogout: logout });
+        }
+        ReactDOM.createRoot(document.getElementById("root")).render(h(App, null));
+    </script>
 </body>
-</html>  
+</html>
